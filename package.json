@@ -1,0 +1,18 @@
+{
+  "name": "codevertise",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ad marketplace for AI coding agent surfaces with crypto payment rails (x402 / MPP)",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "dev:server": "npm run dev --workspace @codevertise/server",
+    "demo": "npm run start --workspace @codevertise/cli-demo"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

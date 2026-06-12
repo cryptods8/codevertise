@@ -1,0 +1,17 @@
+{
+  "name": "@codevertise/sdk",
+  "version": "0.1.0",
+  "description": "Publisher SDK: fetch sponsored lines for AI-agent surfaces and report impressions/clicks",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
