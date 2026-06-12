@@ -1,7 +1,13 @@
 import type Database from "better-sqlite3";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { nanoid } from "nanoid";
 import type { Config } from "./config.js";
+import { getOrCreateSigningSecret } from "./db.js";
 import type { AdEvent, Campaign, Payment, Payout, Publisher } from "./db.js";
+
+function sha256Hex(s: string): string {
+  return createHash("sha256").update(s, "utf8").digest("hex");
+}
 
 /**
  * The Codevertise marketplace core: an English ascending auction over ad
@@ -10,19 +16,32 @@ import type { AdEvent, Campaign, Payment, Payout, Publisher } from "./db.js";
  * crypto rails.
  */
 export class Marketplace {
+  private secret?: Buffer;
+
   constructor(
     private db: Database.Database,
     private cfg: Config,
   ) {}
 
+  /** HMAC key for serve tokens (lazily resolved/persisted). */
+  signingSecret(): Buffer {
+    return (this.secret ??= getOrCreateSigningSecret(this.db, this.cfg.eventSigningSecret));
+  }
+
+  /** Whether an event with this idempotency key has already been recorded. */
+  hasEvent(key: string): boolean {
+    return this.db.prepare(`SELECT 1 FROM events WHERE key = ?`).get(key) !== undefined;
+  }
+
   // ---- campaigns & auction ----
 
   createCampaign(input: {
     advertiser: string;
+    label?: string | null;
     message: string;
     url: string;
     bidPerBlockMicro: number;
-  }): Campaign {
+  }): Campaign & { manageKey: string } {
     if (input.bidPerBlockMicro < this.cfg.minBidMicro) {
       throw new MarketError(
         `bid_per_block must be at least ${this.cfg.minBidMicro} micro-USD`,
@@ -32,9 +51,18 @@ export class Marketplace {
     if (!input.message || input.message.length > 80) {
       throw new MarketError("message is required, max 80 chars (it's a status line)", 400);
     }
+    const label = input.label?.trim() || null;
+    if (label && label.length > 32) {
+      throw new MarketError("label is max 32 chars (it's your public board name)", 400);
+    }
+    // The manage key is the campaign's only credential: shown once in the
+    // create response, stored only as a hash. Losing it means losing raise/
+    // pause control (funding stays open to anyone by design).
+    const manageKey = `cvk_${nanoid(24)}`;
     const campaign: Campaign = {
       id: `cmp_${nanoid(12)}`,
       advertiser: input.advertiser,
+      label,
       message: input.message,
       url: input.url,
       bid_per_block_micro: input.bidPerBlockMicro,
@@ -42,14 +70,31 @@ export class Marketplace {
       spent_micro: 0,
       status: "active",
       created_at: Date.now(),
+      manage_key_hash: sha256Hex(manageKey),
     };
     this.db
       .prepare(
-        `INSERT INTO campaigns (id, advertiser, message, url, bid_per_block_micro, budget_micro, spent_micro, status, created_at)
-         VALUES (@id, @advertiser, @message, @url, @bid_per_block_micro, @budget_micro, @spent_micro, @status, @created_at)`,
+        `INSERT INTO campaigns (id, advertiser, label, message, url, bid_per_block_micro, budget_micro, spent_micro, status, created_at, manage_key_hash)
+         VALUES (@id, @advertiser, @label, @message, @url, @bid_per_block_micro, @budget_micro, @spent_micro, @status, @created_at, @manage_key_hash)`,
       )
       .run(campaign);
-    return campaign;
+    return Object.assign(campaign, { manageKey });
+  }
+
+  /** Constant-time check of a manage key against the campaign's stored hash.
+   *  Campaigns without a hash (house/legacy) are unmanageable over HTTP. */
+  verifyManageKey(campaignId: string, key: string | undefined): boolean {
+    const c = this.getCampaign(campaignId);
+    if (!c?.manage_key_hash || !key) return false;
+    const given = Buffer.from(sha256Hex(key), "hex");
+    const want = Buffer.from(c.manage_key_hash, "hex");
+    return given.length === want.length && timingSafeEqual(given, want);
+  }
+
+  setCampaignStatus(id: string, status: "active" | "paused"): Campaign {
+    this.mustGetCampaign(id);
+    this.db.prepare(`UPDATE campaigns SET status = ? WHERE id = ?`).run(status, id);
+    return this.mustGetCampaign(id);
   }
 
   getCampaign(id: string): Campaign | undefined {
@@ -168,7 +213,10 @@ export class Marketplace {
     return rows.find((c) => this.remainingMicro(c) >= this.impressionCostMicro(c));
   }
 
-  /** Public auction board: ranked queue with remaining budget. */
+  /**
+   * Public auction board: ranked queue with remaining budget. Wallets stay
+   * private — the board identifies advertisers by their chosen label only.
+   */
   auctionState() {
     const rows = this.db
       .prepare(
@@ -180,7 +228,8 @@ export class Marketplace {
     return rows.map((c, i) => ({
       rank: i + 1,
       campaignId: c.id,
-      advertiser: c.advertiser,
+      advertiser: c.label ?? "anonymous",
+      message: c.message,
       bidPerBlockMicro: c.bid_per_block_micro,
       remainingMicro: this.remainingMicro(c),
       serving: c.id === winner?.id,
@@ -241,6 +290,19 @@ export class Marketplace {
     return inserted ? event : undefined;
   }
 
+  /** Impression/click counts for one (publisher, campaign) pair — the basis
+   *  of the click-ratio cap. */
+  publisherCampaignCounts(publisher: string, campaignId: string): { impressions: number; clicks: number } {
+    return this.db
+      .prepare(
+        `SELECT
+           COUNT(CASE WHEN type = 'impression' THEN 1 END) AS impressions,
+           COUNT(CASE WHEN type = 'click' THEN 1 END) AS clicks
+         FROM events WHERE publisher = ? AND campaign_id = ?`,
+      )
+      .get(publisher, campaignId) as { impressions: number; clicks: number };
+  }
+
   getPublisher(wallet: string): Publisher {
     const row = this.db.prepare(`SELECT * FROM publishers WHERE wallet = ?`).get(wallet) as
       | Publisher
@@ -288,18 +350,35 @@ export class Marketplace {
     return payout;
   }
 
+  getPayout(id: string): Payout | undefined {
+    return this.db.prepare(`SELECT * FROM payouts WHERE id = ?`).get(id) as Payout | undefined;
+  }
+
+  /** Record that the payout transaction was broadcast (receipt still unknown). */
+  markPayoutSubmitted(id: string, tx: string): void {
+    const payout = this.mustGetPayout(id);
+    if (payout.status !== "queued") {
+      throw new MarketError(`payout ${id} is ${payout.status}, expected queued`, 409);
+    }
+    this.db.prepare(`UPDATE payouts SET status = 'submitted', tx = ? WHERE id = ?`).run(tx, id);
+  }
+
+  /**
+   * Terminal transition. "sent" confirms the receipt; "failed" refunds the
+   * debit to the publisher's withdrawable pool. Already-terminal payouts
+   * cannot transition again — that's what makes a refund single-shot.
+   */
   resolvePayout(id: string, status: "sent" | "failed", tx?: string): void {
-    const payout = this.db.prepare(`SELECT * FROM payouts WHERE id = ?`).get(id) as
-      | Payout
-      | undefined;
-    if (!payout) throw new MarketError("payout not found", 404);
+    const payout = this.mustGetPayout(id);
+    if (payout.status === "sent" || payout.status === "failed") {
+      throw new MarketError(`payout ${id} already resolved as ${payout.status}`, 409);
+    }
     const update = this.db.prepare(`UPDATE payouts SET status = ?, tx = ? WHERE id = ?`);
     const refund = this.db.prepare(
       `UPDATE publishers SET paid_micro = paid_micro - ? WHERE wallet = ?`,
     );
     this.db.transaction(() => {
-      update.run(status, tx ?? null, id);
-      // A failed send returns the balance to the publisher's withdrawable pool.
+      update.run(status, tx ?? payout.tx, id);
       if (status === "failed") refund.run(payout.amount_micro, payout.wallet);
     })();
   }
@@ -308,6 +387,22 @@ export class Marketplace {
     return this.db
       .prepare(`SELECT * FROM payouts WHERE wallet = ? ORDER BY created_at DESC`)
       .all(wallet) as Payout[];
+  }
+
+  /** Operator view: every payout, optionally filtered by status. */
+  listAllPayouts(status?: Payout["status"]): Payout[] {
+    if (status) {
+      return this.db
+        .prepare(`SELECT * FROM payouts WHERE status = ? ORDER BY created_at DESC`)
+        .all(status) as Payout[];
+    }
+    return this.db.prepare(`SELECT * FROM payouts ORDER BY created_at DESC`).all() as Payout[];
+  }
+
+  private mustGetPayout(id: string): Payout {
+    const p = this.getPayout(id);
+    if (!p) throw new MarketError("payout not found", 404);
+    return p;
   }
 
   private mustGetCampaign(id: string): Campaign {

@@ -3,7 +3,9 @@ import { loadConfig, USD } from "./config.js";
 import { openDb } from "./db.js";
 import { Marketplace, MarketError } from "./marketplace.js";
 
-const cfg = loadConfig({} as NodeJS.ProcessEnv);
+// The economics tests below assume a 50% publisher share; pin it explicitly
+// (the production default is 40%, settable via PUBLISHER_SHARE).
+const cfg = loadConfig({ PUBLISHER_SHARE: "0.5" } as NodeJS.ProcessEnv);
 
 function makeMarket() {
   return new Marketplace(openDb(":memory:"), cfg);
@@ -103,6 +105,106 @@ describe("events and earnings", () => {
     expect(m.remainingMicro(m.getCampaign(c.id)!)).toBe(0);
     expect(m.recordEvent({ key: "over", type: "impression", campaignId: c.id, publisher: "0xpub", surface: "s" })).toBeUndefined();
     expect(m.winner()).toBeUndefined();
+  });
+});
+
+describe("config", () => {
+  it("defaults the publisher share to 40% and honors PUBLISHER_SHARE", () => {
+    expect(loadConfig({} as NodeJS.ProcessEnv).publisherShare).toBe(0.4);
+    expect(loadConfig({ PUBLISHER_SHARE: "0.25" } as NodeJS.ProcessEnv).publisherShare).toBe(0.25);
+    expect(() => loadConfig({ PUBLISHER_SHARE: "1.5" } as NodeJS.ProcessEnv)).toThrow(/PUBLISHER_SHARE/);
+  });
+
+  const TREASURY = `0x${"e5".repeat(20)}`;
+  const KEY = `0x${"f6".repeat(32)}`;
+
+  it("refuses the treasury-draining combo: mock payments + real payout key", () => {
+    expect(() =>
+      loadConfig({ PAYMENTS_MODE: "mock", PAYOUT_PRIVATE_KEY: KEY } as NodeJS.ProcessEnv),
+    ).toThrow(/drain the treasury/);
+  });
+
+  it("refuses mock payments in production unless explicitly allowed", () => {
+    expect(() => loadConfig({ NODE_ENV: "production" } as NodeJS.ProcessEnv)).toThrow(/x402/);
+    expect(
+      loadConfig({ NODE_ENV: "production", ALLOW_MOCK_PAYMENTS: "1" } as NodeJS.ProcessEnv)
+        .paymentsMode,
+    ).toBe("mock");
+  });
+
+  it("x402 mode requires a real treasury address", () => {
+    expect(() => loadConfig({ PAYMENTS_MODE: "x402" } as NodeJS.ProcessEnv)).toThrow(/PAY_TO_ADDRESS/);
+    expect(() =>
+      loadConfig({ PAYMENTS_MODE: "x402", PAY_TO_ADDRESS: "not-an-address" } as NodeJS.ProcessEnv),
+    ).toThrow(/PAY_TO_ADDRESS/);
+    expect(
+      loadConfig({ PAYMENTS_MODE: "x402", PAY_TO_ADDRESS: TREASURY } as NodeJS.ProcessEnv).payTo,
+    ).toBe(TREASURY);
+  });
+
+  it("validates the payout key shape", () => {
+    expect(() =>
+      loadConfig({
+        PAYMENTS_MODE: "x402",
+        PAY_TO_ADDRESS: TREASURY,
+        PAYOUT_PRIVATE_KEY: "0xshort",
+      } as NodeJS.ProcessEnv),
+    ).toThrow(/PAYOUT_PRIVATE_KEY/);
+  });
+});
+
+describe("manage keys", () => {
+  let m: Marketplace;
+  beforeEach(() => (m = makeMarket()));
+
+  it("verifies only the exact key, and house/legacy campaigns are unmanageable", () => {
+    const c = m.createCampaign({ advertiser: "a", message: "x", url: "https://e.com", bidPerBlockMicro: USD });
+    expect(m.verifyManageKey(c.id, c.manageKey)).toBe(true);
+    expect(m.verifyManageKey(c.id, "cvk_nope")).toBe(false);
+    expect(m.verifyManageKey(c.id, undefined)).toBe(false);
+
+    // simulate a legacy row with no hash
+    m.setCampaignStatus(c.id, "active");
+    const db = (m as unknown as { db: import("better-sqlite3").Database }).db;
+    db.prepare(`UPDATE campaigns SET manage_key_hash = NULL WHERE id = ?`).run(c.id);
+    expect(m.verifyManageKey(c.id, c.manageKey)).toBe(false);
+  });
+});
+
+describe("auction board privacy", () => {
+  let m: Marketplace;
+  beforeEach(() => (m = makeMarket()));
+
+  it("shows the advertiser label, never the wallet", () => {
+    m.createCampaign({
+      advertiser: "0xSecretWallet",
+      label: "acme",
+      message: "x",
+      url: "https://e.com",
+      bidPerBlockMicro: 2 * USD,
+    });
+    m.createCampaign({
+      advertiser: "0xOtherWallet",
+      message: "y",
+      url: "https://e.com",
+      bidPerBlockMicro: USD,
+    });
+    const board = m.auctionState();
+    expect(JSON.stringify(board)).not.toContain("0xSecretWallet");
+    expect(JSON.stringify(board)).not.toContain("0xOtherWallet");
+    expect(board.map((b) => b.advertiser)).toEqual(["acme", "anonymous"]);
+  });
+
+  it("rejects labels over 32 chars", () => {
+    expect(() =>
+      m.createCampaign({
+        advertiser: "a",
+        label: "z".repeat(33),
+        message: "x",
+        url: "https://e.com",
+        bidPerBlockMicro: USD,
+      }),
+    ).toThrow(/label/);
   });
 });
 

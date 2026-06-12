@@ -28,8 +28,7 @@ async function main(): Promise<void> {
     if (state.ad && !state.reported && state.firstShownAt > 0) {
       const slotMs = state.ad.slotSeconds * 1000;
       if (now - state.firstShownAt >= slotMs) {
-        const key = `cc-${state.ad.campaignId}-${state.firstShownAt}`;
-        const earned = await reportEvent(cfg, "impression", state.ad.campaignId, key);
+        const earned = await reportEvent(cfg, "impression", state.ad);
         state.sessionEarnedMicro += earned;
         state.reported = true;
       }

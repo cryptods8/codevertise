@@ -11,7 +11,9 @@ import { Codevertise, formatMicroUsd } from "@codevertise/sdk";
 
 const cv = new Codevertise({
   endpoint: process.env.ENDPOINT ?? "http://localhost:4021",
-  publisher: process.env.WALLET ?? "0xDeVe10per000000000000000000000000000Demo",
+  // Must be a real EVM address shape — the marketplace only issues billable
+  // serve tokens to a valid payout wallet.
+  publisher: process.env.WALLET ?? "0xDe00000000000000000000000000000000000001",
   surface: "cli-spinner",
 });
 

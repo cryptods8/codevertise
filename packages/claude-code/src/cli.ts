@@ -55,7 +55,10 @@ function install(): void {
     process.exit(1);
   }
   if (!/^0x[0-9a-fA-F]{40}$/.test(wallet)) {
-    console.warn(`warning: ${wallet} doesn't look like an EVM address; payouts are sent in USDC on Base`);
+    console.error(
+      `error: ${wallet} is not an EVM address — the marketplace only issues billable serve tokens to a valid payout address (USDC on Base)`,
+    );
+    process.exit(1);
   }
   const cfg: Config = {
     endpoint: arg("endpoint") ?? loadConfig()?.endpoint ?? "http://localhost:4021",
@@ -144,12 +147,7 @@ async function open(): Promise<void> {
     console.log("no ad currently serving");
     return;
   }
-  const earned = await reportEvent(
-    cfg,
-    "click",
-    state.ad.campaignId,
-    `cc-click-${state.ad.campaignId}-${Date.now()}`,
-  );
+  const earned = await reportEvent(cfg, "click", state.ad);
   console.log(`opening ${state.ad.url} (+${formatMicroUsd(earned)} for the click)`);
   const opener = process.platform === "darwin" ? "open" : "xdg-open";
   spawn(opener, [state.ad.url], { detached: true, stdio: "ignore" }).unref();

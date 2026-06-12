@@ -4,6 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Codevertise — Advertiser Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -15,9 +18,15 @@
         <p class="tagline">advertiser console — the status line is for rent, settled in USDC over HTTP 402</p>
       </div>
     </div>
-    <div class="wallet">
-      <label for="wallet">advertiser wallet</label>
-      <input id="wallet" placeholder="0xYourAddress" spellcheck="false" />
+    <div class="identity">
+      <div class="wallet">
+        <label for="wallet">advertiser wallet · private</label>
+        <input id="wallet" placeholder="0xYourAddress" spellcheck="false" />
+      </div>
+      <div class="board-name">
+        <label for="adv-label">board name · public</label>
+        <input id="adv-label" maxlength="32" placeholder="your brand (optional)" spellcheck="false" />
+      </div>
     </div>
   </header>
 
@@ -63,7 +72,7 @@
 
     <section class="panel">
       <h2>my campaigns</h2>
-      <p class="hint" id="mine-hint">enter your wallet address above to see your campaigns</p>
+      <p class="hint" id="mine-hint">campaigns you create in this browser appear here — each gets a one-time manage key stored locally</p>
       <div id="mine"></div>
     </section>
   </main>

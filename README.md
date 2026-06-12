@@ -23,7 +23,8 @@ but the payment rails are crypto-native:
 | Auction | English ascending, min bid $1.00/block, min raise $0.50 |
 | Serving | Highest funded bid serves; ties broken by age; unfunded bids never serve |
 | Clicks | Billed at 50× the impression rate |
-| Publisher share | 50% of spend, credited per event to the publisher's wallet |
+| Publisher share | 40% of spend by default (operator-set via `PUBLISHER_SHARE`), credited per event to the publisher's wallet |
+| Advertiser privacy | Wallets never appear on public surfaces; advertisers pick an optional public label for the board |
 | Payouts | USDC on Base, $10 minimum, full withdrawable balance |
 | Idempotency | Every impression/click carries a client event key; replays are no-ops |
 
@@ -71,22 +72,37 @@ PRIVATE_KEY=0xAgentKey npx tsx packages/agent-bidder/src/index.ts
 ```
 
 Use `X402_NETWORK=eip155:8453` for Base mainnet. Set `PAYOUT_PRIVATE_KEY` on the server to send
-publisher payouts on-chain automatically; without it payouts queue for manual settlement (the
-ledger debits either way, and failed sends refund).
+publisher payouts on-chain automatically; without it payouts queue for manual settlement. The
+ledger debits either way; a payout is only marked `sent` once the tx receipt confirms, and only a
+provably reverted tx auto-refunds.
 
 ## API
 
 ```
+GET  /healthz                          liveness + payments mode
 GET  /v1/info                          agent-readable marketplace contract
 GET  /v1/auction                       ranked bid board
-POST /v1/campaigns                     {advertiser, message ≤80ch, url, bidPerBlockUsd}
-POST /v1/campaigns/:id/bid             {bidPerBlockUsd}  raise (English auction)
+POST /v1/campaigns                     {advertiser, message ≤80ch, https url, bidPerBlockUsd}
+                                       → returns a ONE-TIME manage key (cvk_…)
+POST /v1/campaigns/:id/bid             {bidPerBlockUsd} + X-Manage-Key  raise (English auction)
+POST /v1/campaigns/:id/pause|resume    X-Manage-Key (or admin token)   kill switch
+GET  /v1/campaigns/:id/stats           X-Manage-Key                    impressions/clicks/spend
 POST /v1/fund?campaign=&blocks=        💰 PAID — 402 until x402 settlement; credits escrow
 GET  /v1/serve?surface=&pub=           current winner: message, url, rates
-POST /v1/events                        {key, type: impression|click, campaignId, publisher, surface}
+POST /v1/events                        {token, type: impression|click} — serve-token gated
 GET  /v1/publishers/:wallet            earnings ledger + payout history
 POST /v1/publishers/:wallet/payouts    request USDC payout (≥ $10)
+
+# with ADMIN_TOKEN set (Bearer or X-Admin-Token):
+GET  /v1/admin/payouts?status=         operator payout queue
+POST /v1/admin/payouts/:id/retry       re-send a queued payout / reconcile a submitted one
+POST /v1/admin/payouts/:id/fail        give up + refund (refuses if a tx is in flight)
+POST /v1/campaigns/:id/pause           moderation kill switch for any campaign
 ```
+
+Campaign management is credentialed by the **manage key** returned once at creation — there is no
+account system to attack, and wallets are never a lookup key (an on-chain payer can't be linked to
+its campaigns through the API).
 
 The funding price is **dynamic**: `blocks × the campaign's current bid`, computed inside the x402
 route config from the query string, so the 402 challenge always quotes the exact amount.
@@ -110,14 +126,37 @@ agent                          marketplace                     facilitator/chain
 ## Tests
 
 ```bash
-npm test        # 13 vitest cases: auction ranking, raises, idempotent events,
-                # budget clamping, 50/50 splits, payout threshold/refund
+npm test        # 58 vitest cases: auction economics, serve-token anti-fraud,
+                # manage-key auth, click-ratio caps, payout state machine,
+                # x402 settlement crediting, boot-time config guards
 ```
 
-## Honest limitations (MVP)
+## Running in production
 
-- Payer identity on the x402 rail is parsed best-effort from the payment header; production should
-  use the middleware's settle hooks for an authoritative payer + tx hash.
-- No advertiser auth: anyone who pays can fund any campaign (that's also a feature).
-- Mock rail is for development; don't expose it publicly.
+- **Escrow is credited at x402 settlement** (`onAfterSettle`), with the facilitator's authoritative
+  payer + on-chain tx hash in the ledger. A failed settlement credits nothing.
+- **Payout state machine**: `queued → submitted(tx) → sent|failed`. Sends wait for the tx receipt;
+  an ambiguous outcome (RPC timeout after broadcast) is never auto-refunded — reconcile it with
+  `POST /v1/admin/payouts/:id/retry`. Refunds only follow a reverted receipt or an explicit
+  operator decision. Treasury sends are serialized (single nonce stream).
+- **Boot guards**: `mock + PAYOUT_PRIVATE_KEY` refuses to start; `x402` requires a real
+  `PAY_TO_ADDRESS`; `NODE_ENV=production` refuses the mock rail unless `ALLOW_MOCK_PAYMENTS=1`.
+- **Abuse controls**: serve tokens (HMAC, single-use, view-threshold + TTL), per-IP rate limits,
+  per-surface pacing, click-through ratio cap (`CLICK_RATIO`), https-only creatives, billable
+  tokens only for valid EVM payout wallets, `TRUST_PROXY` off by default.
+- **Ops**: `GET /healthz`, graceful SIGTERM drain, JSON logs for money movements and 4xx/5xx,
+  `npm run backup` (online SQLite backup — cron it off-host; the DB is the ledger), `Dockerfile`
+  (volume-mount `DB_PATH`), CI in `.github/workflows/ci.yml`.
+
+## Honest limitations
+
+- Single process, single SQLite file: rate limits and pacing are in-memory, so run ONE instance
+  (scale the serve path with a cache in front, not replicas). Fine well past MVP traffic.
+- Click-fraud control is a ratio cap, not attestation — a patient publisher can still extract the
+  capped ratio. Real click verification (landing-page beacon) is future work.
+- Pseudonymous publishers are unlimited: a botnet across many IPs and wallets can still farm
+  slowly. Economic deterrents (40% share, $10 payout floor, pacing) raise the cost, not to zero.
+- Paying out USDC to anonymous wallets may be money-transmission-adjacent in your jurisdiction —
+  get that checked before mainnet.
 - MPP rail is designed-for but not yet wired (`mppx` middleware slot on `POST /v1/fund`).
+- The x402 rail has not yet been exercised against a live facilitator end-to-end from this repo.

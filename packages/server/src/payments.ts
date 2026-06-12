@@ -105,6 +105,62 @@ function mockPaywall(cfg: Config, market: Marketplace): RequestHandler {
 
 // ---- x402 rail ----
 
+/**
+ * Minimal structural view of the x402 settle-hook context: enough to read the
+ * funding request's query params, the settled tx, and the authoritative payer.
+ */
+interface SettleHookContext {
+  transportContext?: {
+    request?: {
+      path?: string;
+      adapter?: { getQueryParam?(name: string): string | string[] | undefined };
+    };
+  };
+  result?: { payer?: string; transaction?: string };
+  paymentPayload?: { payload?: Record<string, unknown> };
+}
+
+/** Payer from the verified payment payload (EVM "exact" carries the EIP-3009
+ *  authorization). Falls back to the facilitator-reported payer. */
+export function payerFromSettlement(ctx: SettleHookContext): string | undefined {
+  if (ctx.result?.payer) return ctx.result.payer;
+  const payload = ctx.paymentPayload?.payload as
+    | { authorization?: { from?: string }; signature?: { from?: string } }
+    | undefined;
+  return payload?.authorization?.from ?? payload?.signature?.from;
+}
+
+/**
+ * The x402 middleware settles AFTER the route handler runs (it buffers the
+ * response and discards it when settlement fails). Escrow is therefore
+ * credited HERE, at settlement time — never in the route handler — so:
+ *   - a failed settlement credits nothing,
+ *   - the ledger row carries the facilitator's payer and on-chain tx hash.
+ * Exported for tests.
+ */
+export function creditSettledFunding(market: Marketplace, ctx: SettleHookContext): void {
+  const request = ctx.transportContext?.request;
+  if (request?.path !== "/v1/fund") return; // only one paid route today
+  const adapter = request.adapter;
+  const q = (name: string) => {
+    const v = adapter?.getQueryParam?.(name);
+    return Array.isArray(v) ? v[0] : v;
+  };
+  const campaignId = q("campaign");
+  const amountMicro = fundingPriceMicro(market, campaignId, q("blocks"));
+  const tx = ctx.result?.transaction;
+  market.fundCampaign({
+    campaignId: campaignId as string,
+    payer: payerFromSettlement(ctx) ?? "unknown",
+    amountMicro,
+    rail: "x402",
+    tx,
+  });
+  console.log(
+    JSON.stringify({ evt: "funding_settled", campaignId, amountMicro, tx, rail: "x402" }),
+  );
+}
+
 async function x402Paywall(cfg: Config, market: Marketplace): Promise<RequestHandler> {
   const [{ paymentMiddleware, x402ResourceServer }, { HTTPFacilitatorClient }, { ExactEvmScheme }] =
     await Promise.all([
@@ -118,6 +174,23 @@ async function x402Paywall(cfg: Config, market: Marketplace): Promise<RequestHan
     cfg.network as never,
     new ExactEvmScheme(),
   );
+
+  server.onAfterSettle(async (ctx) => {
+    try {
+      creditSettledFunding(market, ctx as unknown as SettleHookContext);
+    } catch (err) {
+      // USDC moved but the ledger credit failed — surface it on both sides
+      // and leave a reconciliation trail keyed by the tx hash.
+      console.error(
+        JSON.stringify({
+          evt: "settled_funding_credit_error",
+          tx: (ctx as unknown as SettleHookContext).result?.transaction,
+          err: String(err),
+        }),
+      );
+      throw err;
+    }
+  });
 
   const middleware = paymentMiddleware(
     {
@@ -148,17 +221,10 @@ async function x402Paywall(cfg: Config, market: Marketplace): Promise<RequestHan
     false,
   );
 
+  // No req.settledPayment here: on the x402 rail the credit happens in the
+  // onAfterSettle hook above, after the facilitator confirms settlement.
   return (req: Request, res: Response, next: NextFunction) => {
-    void middleware(req, res, (err?: unknown) => {
-      if (err) return next(err);
-      // Settlement verified by the facilitator; recover the payer from the
-      // signed payment payload for the ledger.
-      req.settledPayment = {
-        payer: payerFromPaymentHeader(req) ?? "unknown",
-        rail: "x402",
-      };
-      next();
-    });
+    void middleware(req, res, next);
   };
 }
 
@@ -171,26 +237,6 @@ export function usdcAddress(network: string): string {
   const addr = table[network];
   if (!addr) throw new Error(`no USDC address configured for network ${network}`);
   return addr;
-}
-
-/**
- * Best-effort extraction of the paying wallet from the x402 v2
- * PAYMENT-SIGNATURE header (base64 JSON; EVM "exact" payloads carry the
- * EIP-3009 authorization with a `from` address).
- */
-export function payerFromPaymentHeader(req: Request): string | undefined {
-  const header = req.header("payment-signature") ?? req.header("x-payment");
-  if (!header) return undefined;
-  try {
-    const decoded = JSON.parse(Buffer.from(header, "base64").toString("utf8"));
-    return (
-      decoded?.payload?.authorization?.from ??
-      decoded?.payload?.signature?.from ??
-      decoded?.payer
-    );
-  } catch {
-    return undefined;
-  }
 }
 
 /** Human-readable summary of a funding price, used in route responses. */

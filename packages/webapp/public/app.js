@@ -8,6 +8,50 @@ let info = null;
 let board = [];
 
 const wallet = () => $("#wallet").value.trim();
+const advLabel = () => $("#adv-label").value.trim();
+
+// My campaigns = campaigns whose manage key this browser holds. The key is
+// issued once at creation and stored in localStorage; the API never lists
+// campaigns by wallet (that would let anyone enumerate an advertiser).
+function manageKeys() {
+  try {
+    return JSON.parse(localStorage.getItem("cv_keys") ?? "{}");
+  } catch {
+    return {};
+  }
+}
+function saveManageKey(id, key) {
+  const keys = manageKeys();
+  keys[id] = key;
+  localStorage.setItem("cv_keys", JSON.stringify(keys));
+}
+function dropManageKey(id) {
+  const keys = manageKeys();
+  delete keys[id];
+  localStorage.setItem("cv_keys", JSON.stringify(keys));
+}
+const keyFor = (id) => manageKeys()[id];
+
+let mine = [];
+let mineIds = new Set();
+
+async function loadMine() {
+  const keys = manageKeys();
+  const rows = await Promise.all(
+    Object.keys(keys).map(async (id) => {
+      const res = await fetch(`/v1/campaigns/${encodeURIComponent(id)}`, {
+        headers: { "x-manage-key": keys[id] },
+      });
+      if (res.status === 404) {
+        dropManageKey(id);
+        return null;
+      }
+      return res.ok ? res.json() : null;
+    }),
+  );
+  mine = rows.filter(Boolean);
+  mineIds = new Set(mine.map((c) => c.id));
+}
 
 function esc(s) {
   const div = document.createElement("div");
@@ -47,16 +91,13 @@ async function loadInfo() {
 
 async function refreshBoard() {
   board = (await api("/v1/auction")).body.board;
-  const campaigns = (await api("/v1/campaigns")).body.campaigns;
-  const byId = Object.fromEntries(campaigns.map((c) => [c.id, c]));
   $("#board tbody").innerHTML = board
     .map((b) => {
-      const c = byId[b.campaignId];
-      const mine = wallet() && b.advertiser === wallet();
-      return `<tr class="${mine ? "row-mine" : ""}">
+      const isMine = mineIds.has(b.campaignId);
+      return `<tr class="${isMine ? "row-mine" : ""}">
         <td>${b.rank}</td>
-        <td class="mono" title="${esc(b.campaignId)}">${esc(c ? c.message : b.campaignId)}</td>
-        <td class="mono">${esc(short(b.advertiser))}${mine ? " (you)" : ""}</td>
+        <td class="mono" title="${esc(b.campaignId)}">${esc(b.message)}</td>
+        <td class="mono">${esc(b.advertiser)}${isMine ? " (you)" : ""}</td>
         <td class="mono">${fmt(b.bidPerBlockMicro)}</td>
         <td class="mono">${fmt(b.remainingMicro)}</td>
         <td>${b.serving ? '<span class="serving">● SERVING</span>' : ""}</td>
@@ -64,8 +105,6 @@ async function refreshBoard() {
     })
     .join("");
 }
-
-const short = (a) => (a.length > 14 ? `${a.slice(0, 8)}…${a.slice(-4)}` : a);
 
 // ---- create campaign ----
 
@@ -83,12 +122,14 @@ $("#create-form").addEventListener("submit", async (e) => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         advertiser: wallet(),
+        label: advLabel() || undefined,
         message: $("#message").value,
         url: $("#url").value,
         bidPerBlockUsd: Number($("#bid").value),
       }),
     });
-    toast(`campaign ${body.campaign.id} created — fund it to start serving`);
+    saveManageKey(body.campaign.id, body.manageKey);
+    toast(`campaign ${body.campaign.id} created — manage key saved in this browser; fund it to start serving`);
     $("#create-form").reset();
     $("#charcount").textContent = "0/80";
     $("#preview-msg").textContent = "your message here";
@@ -100,21 +141,18 @@ $("#create-form").addEventListener("submit", async (e) => {
 
 // ---- my campaigns ----
 
-async function refreshMine() {
-  if (!wallet()) {
+async function renderMine() {
+  if (!mine.length) {
     $("#mine-hint").style.display = "";
     $("#mine").innerHTML = "";
     return;
   }
   $("#mine-hint").style.display = "none";
-  const { body } = await api(`/v1/campaigns?advertiser=${encodeURIComponent(wallet())}`);
-  if (!body.campaigns.length) {
-    $("#mine").innerHTML = `<p class="hint">no campaigns yet — create one above</p>`;
-    return;
-  }
   const cards = await Promise.all(
-    body.campaigns.map(async (c) => {
-      const stats = (await api(`/v1/campaigns/${c.id}/stats`)).body;
+    mine.map(async (c) => {
+      const stats = (
+        await api(`/v1/campaigns/${c.id}/stats`, { headers: { "x-manage-key": keyFor(c.id) } })
+      ).body;
       const pct = c.budget_micro ? Math.min(100, (c.spent_micro / c.budget_micro) * 100) : 0;
       const onBoard = board.find((b) => b.campaignId === c.id);
       return `<div class="campaign" data-id="${c.id}">
@@ -137,6 +175,7 @@ async function refreshMine() {
           <label>new bid $</label><input type="number" step="0.5" class="bid-input"
             value="${((c.bid_per_block_micro + (info?.adUnit.minBidIncrementUsd ?? 0.5) * USD) / USD).toFixed(2)}" />
           <button class="ghost raise-btn">raise bid</button>
+          <button class="ghost pause-btn">${c.status === "paused" ? "resume" : "pause"}</button>
         </div>
       </div>`;
     }),
@@ -154,13 +193,26 @@ document.addEventListener("click", async (e) => {
     try {
       await api(`/v1/campaigns/${id}/bid`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-manage-key": keyFor(id) },
         body: JSON.stringify({ bidPerBlockUsd: Number(card.querySelector(".bid-input").value) }),
       });
       toast("bid raised");
       await refreshAll();
     } catch (err) {
       toast(`raise failed: ${err.message}`, "err");
+    }
+  } else if (e.target.classList.contains("pause-btn")) {
+    try {
+      const c = mine.find((m) => m.id === id);
+      const action = c?.status === "paused" ? "resume" : "pause";
+      await api(`/v1/campaigns/${id}/${action}`, {
+        method: "POST",
+        headers: { "x-manage-key": keyFor(id) },
+      });
+      toast(`campaign ${action}d`);
+      await refreshAll();
+    } catch (err) {
+      toast(`pause failed: ${err.message}`, "err");
     }
   }
 });
@@ -211,14 +263,19 @@ $("#pay-close").addEventListener("click", () => $("#pay-dialog").close());
 // ---- boot ----
 
 $("#wallet").value = localStorage.getItem("cv_wallet") ?? "";
+$("#adv-label").value = localStorage.getItem("cv_label") ?? "";
 $("#wallet").addEventListener("input", () => {
   localStorage.setItem("cv_wallet", wallet());
-  refreshMine().catch(() => {});
+  refreshAll().catch(() => {});
+});
+$("#adv-label").addEventListener("input", () => {
+  localStorage.setItem("cv_label", advLabel());
 });
 
 async function refreshAll() {
+  await loadMine(); // first: the board marks "(you)" rows by my campaign ids
   await refreshBoard();
-  await refreshMine();
+  await renderMine();
 }
 
 loadInfo()

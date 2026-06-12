@@ -19,6 +19,13 @@ export interface Ad {
   impressionMicro: number;
   clickMicro: number;
   publisherShare: number;
+  /**
+   * Single-use authorization to bill this serve, issued by the marketplace.
+   * Absent when the surface was served within its view window (the previous
+   * impression hasn't cleared yet) — display the ad, but it won't bill again
+   * until the next billable serve.
+   */
+  token?: string;
 }
 
 export interface PublisherEarnings {
@@ -64,16 +71,16 @@ export class Codevertise {
 
   /**
    * Count an impression. Call this only after the ad was actually visible for
-   * its full slot (use `showAd` to get that for free). `key` makes the event
-   * idempotent; omit it to generate one.
+   * its full slot (use `showAd` to get that for free). The marketplace enforces
+   * the same threshold server-side against the serve token's issue time.
    */
-  async reportImpression(ad: Ad, key?: string): Promise<number> {
-    return this.report("impression", ad, key);
+  async reportImpression(ad: Ad): Promise<number> {
+    return this.report("impression", ad);
   }
 
   /** Count a click (the user opened ad.url). Worth `clickMicro`. */
-  async reportClick(ad: Ad, key?: string): Promise<number> {
-    return this.report("click", ad, key);
+  async reportClick(ad: Ad): Promise<number> {
+    return this.report("click", ad);
   }
 
   /**
@@ -114,17 +121,14 @@ export class Codevertise {
     return body;
   }
 
-  private async report(type: "impression" | "click", ad: Ad, key?: string): Promise<number> {
+  private async report(type: "impression" | "click", ad: Ad): Promise<number> {
+    // No token means this serve wasn't billable (served within its view
+    // window); there is nothing to report.
+    if (!ad.token) return 0;
     const res = await this.fetch(`${this.endpoint}/v1/events`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        key: key ?? cryptoRandomKey(),
-        type,
-        campaignId: ad.campaignId,
-        publisher: this.publisher,
-        surface: this.surface,
-      }),
+      body: JSON.stringify({ token: ad.token, type }),
     });
     if (!res.ok) throw new Error(`event failed: ${res.status}`);
     const body = (await res.json()) as { recorded: boolean; earnedMicro?: number };
@@ -134,10 +138,6 @@ export class Codevertise {
 
 export function formatMicroUsd(micro: number): string {
   return `$${(micro / 1_000_000).toFixed(4)}`;
-}
-
-function cryptoRandomKey(): string {
-  return globalThis.crypto.randomUUID();
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

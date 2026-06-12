@@ -83,6 +83,9 @@ async function main() {
   ).json();
   const campaignId = created.campaign.id;
   console.log(`campaign ${campaignId} created`);
+  // The manage key is shown exactly once — it's the only credential that can
+  // raise this campaign's bid or pause it later.
+  if (created.manageKey) console.log(`  manage key (save it): ${created.manageKey}`);
 
   // 4. Fund it through the 402.
   const pay = await payingFetch();
@@ -91,7 +94,12 @@ async function main() {
   });
   const funded = await fundRes.json();
   if (!fundRes.ok) throw new Error(`funding failed: ${JSON.stringify(funded)}`);
-  console.log(`  ✓ funded ${funded.funded} (payment ${funded.payment.id}, rail ${funded.payment.rail})\n`);
+  // Mock rail returns the ledger payment row; the x402 rail settles on
+  // response release and reports the tx in the PAYMENT-RESPONSE header.
+  const settledTx = fundRes.headers.get("payment-response") ? " (settled on-chain)" : "";
+  console.log(
+    `  ✓ funded ${funded.funded} (rail ${funded.payment.rail}${funded.payment.id ? `, payment ${funded.payment.id}` : ""})${settledTx}\n`,
+  );
 
   // 5. Confirm position.
   const after = (await (await fetch(`${ENDPOINT}/v1/auction`)).json()).board as Array<{

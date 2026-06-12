@@ -21,6 +21,8 @@ export interface Ad {
   impressionMicro: number;
   clickMicro: number;
   publisherShare: number;
+  /** Single-use serve authorization from the marketplace; required to bill. */
+  token?: string;
 }
 
 export interface State {
@@ -124,13 +126,15 @@ export function fetchAd(cfg: Config): Promise<Ad | null> {
 export async function reportEvent(
   cfg: Config,
   type: "impression" | "click",
-  campaignId: string,
-  key: string,
+  ad: Ad,
 ): Promise<number> {
+  // The serve token authorizes (and identifies) the billable event; an ad
+  // served without one isn't billable.
+  if (!ad.token) return 0;
   const body = await api<{ recorded: boolean; earnedMicro?: number }>(cfg, "/v1/events", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ key, type, campaignId, publisher: cfg.wallet, surface: cfg.surface }),
+    body: JSON.stringify({ token: ad.token, type }),
   });
   return body.recorded ? (body.earnedMicro ?? 0) : 0;
 }

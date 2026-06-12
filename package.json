@@ -10,7 +10,8 @@
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "dev:server": "npm run dev --workspace @codevertise/server",
-    "demo": "npm run start --workspace @codevertise/cli-demo"
+    "demo": "npm run start --workspace @codevertise/cli-demo",
+    "backup": "node scripts/backup.mjs"
   },
   "engines": {
     "node": ">=20"

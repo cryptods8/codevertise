@@ -7,16 +7,42 @@ const cfg = loadConfig();
 const db = openDb(cfg.dbPath);
 const market = new Marketplace(db, cfg);
 
-// Bootstrap inventory with house ads so publishers see fill from minute one
-// (the same trick kickbacks.ai launched with).
-seedHouseAds(market);
+// Bootstrap inventory with house ads so publishers see fill from minute one —
+// but only on the mock rail. On the real rail publisher earnings are real
+// USDC liabilities, so unfunded house inventory would pay out of the treasury.
+if (cfg.paymentsMode === "mock") seedHouseAds(market);
 
 const app = await buildApp(cfg, market);
-app.listen(cfg.port, () => {
+const server = app.listen(cfg.port, () => {
   console.log(`codevertise marketplace on :${cfg.port}`);
   console.log(`  payments: ${cfg.paymentsMode} (${cfg.network}, payTo ${cfg.payTo})`);
   console.log(`  GET /v1/info for the agent-readable contract`);
+  if (cfg.paymentsMode === "mock") {
+    console.warn(
+      "  ⚠ MOCK RAIL: funding is free (X-Mock-Payment header). Never expose this publicly.",
+    );
+  }
 });
+
+// Graceful shutdown: stop accepting connections, then close the ledger.
+// In-flight payout sends finish through the serialized chain before exit.
+let shuttingDown = false;
+for (const sig of ["SIGTERM", "SIGINT"] as const) {
+  process.on(sig, () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(JSON.stringify({ evt: "shutdown", signal: sig }));
+    server.close(() => {
+      db.close();
+      process.exit(0);
+    });
+    // Idle keep-alive sockets would hold close() open forever; drop them now
+    // and give in-flight requests a short grace before the hard stop.
+    server.closeIdleConnections();
+    setTimeout(() => server.closeAllConnections(), 5_000).unref();
+    setTimeout(() => process.exit(1), 10_000).unref();
+  });
+}
 
 function seedHouseAds(m: Marketplace) {
   if (m.auctionState().length > 0) return;
@@ -35,6 +61,7 @@ function seedHouseAds(m: Marketplace) {
   for (const s of seeds) {
     const c = m.createCampaign({
       advertiser: "house",
+      label: "codevertise",
       message: s.message,
       url: s.url,
       bidPerBlockMicro: Math.round(s.bidUsd * USD),

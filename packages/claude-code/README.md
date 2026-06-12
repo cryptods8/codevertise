@@ -1,8 +1,8 @@
 # @codevertise/claude-code
 
 **A Claude Code status line that pays you.** While Claude is thinking, the most-watched line in
-your terminal shows a sponsored message from the Codevertise auction — and 50% of every impression
-accrues to your wallet in USDC.
+your terminal shows a sponsored message from the Codevertise auction — and the publisher share of every impression
+(40% by default) accrues to your wallet in USDC.
 
 ```
 Fable · my-project │ ⛁ $0.0008 │ [sponsored] ShipFast CI — your agent already pays for this slot

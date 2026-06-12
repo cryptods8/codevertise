@@ -9,7 +9,7 @@
   --green: #3ddc97;
   --amber: #ffc145;
   --red: #ff6b6b;
-  --mono: "SFMono-Regular", ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  --mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
 }
 
 * { box-sizing: border-box; }
@@ -18,7 +18,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 13.5px/1.55 var(--mono);
 }
 
 header {
@@ -34,22 +34,25 @@ header {
 
 .brand { display: flex; align-items: center; gap: 14px; }
 .logo { font-size: 22px; color: var(--accent); letter-spacing: 2px; }
-h1 { margin: 0; font-size: 20px; letter-spacing: 1px; }
-.tagline { margin: 0; color: var(--muted); font-size: 12.5px; }
+h1 { margin: 0; font-size: 18px; letter-spacing: 1px; }
+.tagline { margin: 0; color: var(--muted); font-size: 12px; }
 
-.wallet { display: flex; flex-direction: column; gap: 4px; min-width: 340px; }
-.wallet label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+.identity { display: flex; gap: 16px; flex-wrap: wrap; }
+.wallet, .board-name { display: flex; flex-direction: column; gap: 4px; }
+.wallet { min-width: 340px; }
+.board-name { min-width: 200px; }
+.identity label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
 
 input, button {
   font: inherit;
   color: var(--text);
   background: var(--panel-2);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 0;
   padding: 8px 12px;
 }
 input:focus { outline: 1px solid var(--accent); }
-input#wallet { font-family: var(--mono); font-size: 13px; }
+input#wallet { font-size: 13px; }
 
 button {
   cursor: pointer;
@@ -73,21 +76,20 @@ main {
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 12px;
   padding: 20px 24px;
 }
 .panel h2 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: 2px; color: var(--accent); }
-.hint { color: var(--muted); font-size: 12.5px; margin: 0 0 14px; }
+.hint { color: var(--muted); font-size: 12px; margin: 0 0 14px; }
 
-.market-facts { display: flex; gap: 28px; flex-wrap: wrap; font-size: 13.5px; }
-.market-facts .fact b { display: block; font-size: 17px; color: var(--text); }
+.market-facts { display: flex; gap: 28px; flex-wrap: wrap; font-size: 12.5px; }
+.market-facts .fact b { display: block; font-size: 15.5px; color: var(--text); }
 .market-facts .fact { color: var(--muted); }
 .rail-badge {
-  display: inline-block; padding: 2px 10px; border-radius: 99px;
-  border: 1px solid var(--accent); color: var(--accent); font-size: 12px; font-family: var(--mono);
+  display: inline-block; padding: 2px 10px;
+  border: 1px solid var(--accent); color: var(--accent); font-size: 12px;
 }
 
-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th { text-align: left; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; padding: 6px 10px; }
 td { padding: 8px 10px; border-top: 1px solid var(--border); }
 td.mono, .mono { font-family: var(--mono); font-size: 13px; }
@@ -104,7 +106,7 @@ form#create-form { display: flex; gap: 14px; align-items: flex-end; flex-wrap: w
 .preview { margin-top: 16px; }
 .preview-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); display: block; margin-bottom: 6px; }
 .preview code {
-  display: block; padding: 10px 14px; border-radius: 8px;
+  display: block; padding: 10px 14px;
   background: #05070c; border: 1px solid var(--border);
   font-family: var(--mono); font-size: 13px; color: var(--muted);
   overflow-x: auto; white-space: nowrap;
@@ -112,15 +114,15 @@ form#create-form { display: flex; gap: 14px; align-items: flex-end; flex-wrap: w
 #preview-msg { color: var(--accent); }
 
 .campaign {
-  border: 1px solid var(--border); border-radius: 10px;
+  border: 1px solid var(--border);
   padding: 14px 16px; margin-bottom: 12px; background: var(--panel-2);
 }
 .campaign .top { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; }
 .campaign .msg { font-family: var(--mono); font-size: 13.5px; color: var(--accent); }
-.campaign .meta { color: var(--muted); font-size: 12.5px; }
-.campaign .stats { display: flex; gap: 22px; margin: 10px 0 12px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+.campaign .meta { color: var(--muted); font-size: 12px; }
+.campaign .stats { display: flex; gap: 22px; margin: 10px 0 12px; font-size: 12.5px; color: var(--muted); flex-wrap: wrap; }
 .campaign .stats b { color: var(--text); }
-.budgetbar { height: 6px; border-radius: 4px; background: #05070c; overflow: hidden; margin: 8px 0 12px; }
+.budgetbar { height: 6px; background: #05070c; overflow: hidden; margin: 8px 0 12px; }
 .budgetbar > div { height: 100%; background: linear-gradient(90deg, var(--green), var(--amber)); }
 .campaign .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .campaign .actions input { width: 90px; padding: 6px 10px; }
@@ -128,21 +130,21 @@ form#create-form { display: flex; gap: 14px; align-items: flex-end; flex-wrap: w
 
 dialog {
   background: var(--panel); color: var(--text);
-  border: 1px solid var(--border); border-radius: 12px;
+  border: 1px solid var(--border);
   max-width: 640px; padding: 22px 26px;
 }
 dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 dialog h3 { margin: 0 0 8px; color: var(--amber); }
 dialog pre {
-  background: #05070c; border: 1px solid var(--border); border-radius: 8px;
+  background: #05070c; border: 1px solid var(--border);
   padding: 12px; font-size: 12px; overflow-x: auto; font-family: var(--mono);
 }
 .dialog-actions { text-align: right; }
 
 #toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-  background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
-  padding: 10px 18px; font-size: 14px; opacity: 0; pointer-events: none;
+  background: var(--panel-2); border: 1px solid var(--border);
+  padding: 10px 18px; font-size: 13px; opacity: 0; pointer-events: none;
   transition: opacity 0.25s; max-width: 80vw;
 }
 #toast.show { opacity: 1; }
