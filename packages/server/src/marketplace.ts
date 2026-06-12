@@ -58,6 +58,41 @@ export class Marketplace {
       | undefined;
   }
 
+  listCampaigns(advertiser?: string): Campaign[] {
+    if (advertiser) {
+      return this.db
+        .prepare(`SELECT * FROM campaigns WHERE advertiser = ? ORDER BY created_at DESC`)
+        .all(advertiser) as Campaign[];
+    }
+    return this.db
+      .prepare(`SELECT * FROM campaigns ORDER BY created_at DESC`)
+      .all() as Campaign[];
+  }
+
+  campaignStats(id: string) {
+    const c = this.mustGetCampaign(id);
+    const row = this.db
+      .prepare(
+        `SELECT
+           COUNT(CASE WHEN type = 'impression' THEN 1 END) AS impressions,
+           COUNT(CASE WHEN type = 'click' THEN 1 END) AS clicks,
+           COUNT(DISTINCT publisher) AS publishers
+         FROM events WHERE campaign_id = ?`,
+      )
+      .get(id) as { impressions: number; clicks: number; publishers: number };
+    return {
+      campaignId: c.id,
+      impressions: row.impressions,
+      clicks: row.clicks,
+      publishers: row.publishers,
+      spentMicro: c.spent_micro,
+      budgetMicro: c.budget_micro,
+      remainingMicro: this.remainingMicro(c),
+      impressionCostMicro: this.impressionCostMicro(c),
+      clickCostMicro: this.clickCostMicro(c),
+    };
+  }
+
   /** English ascending auction: a raise must beat your own bid by the minimum increment. */
   raiseBid(id: string, newBidMicro: number): Campaign {
     const c = this.mustGetCampaign(id);

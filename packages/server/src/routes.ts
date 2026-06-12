@@ -1,4 +1,6 @@
 import express, { type Express } from "express";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { USD, usdToMicro, type Config } from "./config.js";
 import { MarketError, type Marketplace } from "./marketplace.js";
@@ -68,6 +70,15 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
         campaign.bid_per_block_micro,
       )} per block via x402)`,
     });
+  });
+
+  app.get("/v1/campaigns", (req, res) => {
+    const advertiser = typeof req.query.advertiser === "string" ? req.query.advertiser : undefined;
+    res.json({ campaigns: market.listCampaigns(advertiser) });
+  });
+
+  app.get("/v1/campaigns/:id/stats", (req, res) => {
+    res.json(market.campaignStats(req.params.id));
   });
 
   app.get("/v1/campaigns/:id", (req, res) => {
@@ -156,6 +167,10 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     const result = await executePayout(cfg, market, payout.id, wallet, payout.amount_micro);
     res.status(201).json({ payout: { ...payout, ...result } });
   });
+
+  // ---- advertiser webapp (static, no build step) ----
+  const webappDir = fileURLToPath(new URL("../../webapp/public", import.meta.url));
+  if (existsSync(webappDir)) app.use(express.static(webappDir));
 
   // ---- errors ----
   app.use(

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Codevertise — Advertiser Console</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo">▮▯▮</span>
+      <div>
+        <h1>codevertise</h1>
+        <p class="tagline">advertiser console — the status line is for rent, settled in USDC over HTTP 402</p>
+      </div>
+    </div>
+    <div class="wallet">
+      <label for="wallet">advertiser wallet</label>
+      <input id="wallet" placeholder="0xYourAddress" spellcheck="false" />
+    </div>
+  </header>
+
+  <main>
+    <section class="panel" id="market-panel">
+      <h2>market</h2>
+      <div class="market-facts" id="market-facts">loading…</div>
+    </section>
+
+    <section class="panel">
+      <h2>live auction board</h2>
+      <p class="hint">English ascending auction · highest funded bid serves · 1 block = 1,000 × 5s impressions</p>
+      <table id="board">
+        <thead>
+          <tr><th>#</th><th>campaign</th><th>advertiser</th><th>bid / block</th><th>remaining</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>new campaign</h2>
+      <form id="create-form">
+        <div class="field grow">
+          <label for="message">status line creative <span id="charcount" class="count">0/80</span></label>
+          <input id="message" maxlength="80" placeholder="Your product — one tasteful line while Claude thinks" required />
+        </div>
+        <div class="field grow">
+          <label for="url">landing url</label>
+          <input id="url" type="url" placeholder="https://…" required />
+        </div>
+        <div class="field">
+          <label for="bid">bid $ / block</label>
+          <input id="bid" type="number" min="1" step="0.5" value="1.50" required />
+        </div>
+        <button type="submit">create campaign</button>
+      </form>
+      <div class="preview">
+        <span class="preview-label">status line preview</span>
+        <code id="preview-line">Fable · my-project │ ⛁ $0.0123 │ [sponsored] <span id="preview-msg">your message here</span></code>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>my campaigns</h2>
+      <p class="hint" id="mine-hint">enter your wallet address above to see your campaigns</p>
+      <div id="mine"></div>
+    </section>
+  </main>
+
+  <dialog id="pay-dialog">
+    <h3>402 Payment Required</h3>
+    <p id="pay-summary"></p>
+    <pre id="pay-challenge"></pre>
+    <p class="hint">this marketplace runs the real x402 rail — pay programmatically (your agent already can):</p>
+    <pre id="pay-snippet"></pre>
+    <div class="dialog-actions"><button id="pay-close">close</button></div>
+  </dialog>
+
+  <div id="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>

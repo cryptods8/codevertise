@@ -1,0 +1,9 @@
+{
+  "name": "@codevertise/webapp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Advertiser console — static SPA served by @codevertise/server at /",
+  "files": [
+    "public"
+  ]
+}

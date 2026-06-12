@@ -106,6 +106,31 @@ describe("events and earnings", () => {
   });
 });
 
+describe("advertiser console queries", () => {
+  let m: Marketplace;
+  beforeEach(() => (m = makeMarket()));
+
+  it("lists campaigns filtered by advertiser", () => {
+    fundedCampaign(m, 2, 10, "alice");
+    fundedCampaign(m, 3, 10, "bob");
+    fundedCampaign(m, 4, 10, "alice");
+    expect(m.listCampaigns("alice")).toHaveLength(2);
+    expect(m.listCampaigns()).toHaveLength(3);
+  });
+
+  it("aggregates per-campaign stats", () => {
+    const c = fundedCampaign(m, 2, 10);
+    m.recordEvent({ key: "i1", type: "impression", campaignId: c.id, publisher: "p1", surface: "s" });
+    m.recordEvent({ key: "i2", type: "impression", campaignId: c.id, publisher: "p2", surface: "s" });
+    m.recordEvent({ key: "c1", type: "click", campaignId: c.id, publisher: "p1", surface: "s" });
+    const stats = m.campaignStats(c.id);
+    expect(stats.impressions).toBe(2);
+    expect(stats.clicks).toBe(1);
+    expect(stats.publishers).toBe(2);
+    expect(stats.spentMicro).toBe(2000 + 2000 + 100_000);
+  });
+});
+
 describe("payouts", () => {
   let m: Marketplace;
   beforeEach(() => (m = makeMarket()));
