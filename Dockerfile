@@ -24,6 +24,9 @@ FROM node:22-slim
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build /app /app
+# Pre-create the volume mountpoint owned by node, so named volumes
+# inherit writable ownership instead of root's.
+RUN mkdir /data && chown node:node /data
 USER node
 EXPOSE 4021
 HEALTHCHECK --interval=30s --timeout=3s \
