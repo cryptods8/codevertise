@@ -1,0 +1,25 @@
+{
+  "name": "@codevertise/claude-code",
+  "version": "0.1.0",
+  "description": "Claude Code status line that pays you: Codevertise sponsored lines, earnings in USDC",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "codevertise": "dist/cli.js",
+    "codevertise-statusline": "dist/statusline.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "typescript": "^5.6.0"
+  }
+}

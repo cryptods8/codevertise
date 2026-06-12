@@ -37,6 +37,7 @@ All money is integer **micro-USD** internally (1e6 = $1), which is exactly USDC'
 | `@codevertise/sdk` | Publisher SDK: fetch the winning ad, view-threshold impressions, clicks, earnings, payout |
 | `@codevertise/agent-bidder` | Example autonomous advertiser: reads the board, outbids, pays the 402 |
 | `@codevertise/cli-demo` | Example publisher: a spinner whose status line is Codevertise inventory |
+| `@codevertise/claude-code` | **The real publisher client**: a Claude Code status-line extension — `npm i -g ./packages/claude-code && codevertise install --wallet 0xYou` ([docs](packages/claude-code/README.md)) |
 
 ## Quickstart (mock rail — no chain needed)
 
