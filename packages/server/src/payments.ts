@@ -216,14 +216,38 @@ async function x402Paywall(cfg: Config, market: Marketplace): Promise<RequestHan
     server,
     undefined,
     undefined,
-    // Sync with the facilitator lazily (per request) rather than at boot, so
-    // a briefly unreachable facilitator can't take the marketplace down.
+    // We sync supported kinds with the facilitator ourselves (below) instead
+    // of letting the middleware do it: its boot-time initialize() promise has
+    // no rejection handler until the first paid request, so a facilitator
+    // outage during boot would crash the process. `false` here means the
+    // middleware never syncs — without our own initialize() every paid
+    // request fails with "Facilitator does not support exact on <network>".
     false,
+  );
+
+  let facilitatorSynced = false;
+  const syncFacilitator = async () => {
+    await server.initialize();
+    facilitatorSynced = true;
+    console.log(JSON.stringify({ evt: "facilitator_synced", url: cfg.facilitatorUrl }));
+  };
+  // Boot-time attempt is best-effort; paid requests retry until it sticks.
+  syncFacilitator().catch((err) =>
+    console.error(JSON.stringify({ evt: "facilitator_sync_failed", err: String(err) })),
   );
 
   // No req.settledPayment here: on the x402 rail the credit happens in the
   // onAfterSettle hook above, after the facilitator confirms settlement.
-  return (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    if (!facilitatorSynced) {
+      try {
+        await syncFacilitator();
+      } catch (err) {
+        console.error(JSON.stringify({ evt: "facilitator_sync_failed", err: String(err) }));
+        res.status(502).json({ error: "payment facilitator unreachable, try again shortly" });
+        return;
+      }
+    }
     void middleware(req, res, next);
   };
 }
