@@ -206,7 +206,15 @@ async function x402Paywall(cfg: Config, market: Marketplace): Promise<RequestHan
               return Array.isArray(v) ? v[0] : v;
             };
             const micro = fundingPriceMicro(market, q("campaign"), q("blocks"));
-            return { amount: String(micro), asset: usdcAddress(cfg.network), decimals: 6 } as never;
+            const usdc = usdcAsset(cfg.network);
+            return {
+              amount: String(micro),
+              asset: usdc.address,
+              decimals: 6,
+              // EIP-712 domain of the token contract — clients need it to sign
+              // the EIP-3009 transferWithAuthorization payload.
+              extra: { name: usdc.name, version: usdc.version },
+            } as never;
           },
         },
         description: "Fund a Codevertise ad campaign with USDC (1 block = 1,000 impressions)",
@@ -252,15 +260,29 @@ async function x402Paywall(cfg: Config, market: Marketplace): Promise<RequestHan
   };
 }
 
-/** USDC contract per supported network (CAIP-2 keyed). */
-export function usdcAddress(network: string): string {
-  const table: Record<string, string> = {
-    "eip155:8453": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // Base mainnet
-    "eip155:84532": "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // Base Sepolia
+/** USDC contract + EIP-712 domain per supported network (CAIP-2 keyed).
+ *  name/version must match the token contract's domain exactly or EIP-3009
+ *  signatures fail verification (mainnet says "USD Coin", Sepolia says "USDC"). */
+export function usdcAsset(network: string): { address: string; name: string; version: string } {
+  const table: Record<string, { address: string; name: string; version: string }> = {
+    "eip155:8453": {
+      address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // Base mainnet
+      name: "USD Coin",
+      version: "2",
+    },
+    "eip155:84532": {
+      address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // Base Sepolia
+      name: "USDC",
+      version: "2",
+    },
   };
-  const addr = table[network];
-  if (!addr) throw new Error(`no USDC address configured for network ${network}`);
-  return addr;
+  const asset = table[network];
+  if (!asset) throw new Error(`no USDC address configured for network ${network}`);
+  return asset;
+}
+
+export function usdcAddress(network: string): string {
+  return usdcAsset(network).address;
 }
 
 /** Human-readable summary of a funding price, used in route responses. */
