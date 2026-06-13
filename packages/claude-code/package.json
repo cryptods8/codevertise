@@ -7,7 +7,7 @@
   "homepage": "https://codevertise.dev",
   "repository": {
     "type": "git",
-    "url": "https://github.com/codevertise/codevertise.git",
+    "url": "git+https://github.com/cryptods8/codevertise.git",
     "directory": "packages/claude-code"
   },
   "keywords": [
