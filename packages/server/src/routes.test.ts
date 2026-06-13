@@ -6,6 +6,7 @@ import { openDb } from "./db.js";
 import { Marketplace } from "./marketplace.js";
 import { buildApp } from "./routes.js";
 import { signToken, type ServeToken } from "./tokens.js";
+import { privateKeyToAccount } from "viem/accounts";
 
 /**
  * End-to-end checks on the anti-fraud boundary: a billable event must redeem a
@@ -443,5 +444,63 @@ describe("campaign cancel & withdraw over HTTP", () => {
       body: JSON.stringify({ refundTo: REFUND }),
     });
     expect(empty.status).toBe(400);
+  });
+});
+
+describe("SIWE session over the X-Session-Token header (embedded webview)", () => {
+  // The Farcaster Mini App webview is cross-site to the host, so the session
+  // cookie is third-party and often dropped. The client replays the token in a
+  // header instead; the whole signed-in surface must work with NO cookie.
+  it("signs in, names the board, and creates a campaign with only the header", async () => {
+    const h = await start();
+    const account = privateKeyToAccount(`0x${"ab".repeat(32)}`);
+
+    // 1. Challenge + signature → verify returns the token in the body.
+    const { message, nonce } = await (
+      await fetch(`${h.base}/v1/auth/nonce?address=${account.address}`)
+    ).json();
+    const signature = await account.signMessage({ message });
+    const verify = await fetch(`${h.base}/v1/auth/verify`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ nonce, signature }),
+    });
+    expect(verify.status).toBe(200);
+    const session = await verify.json();
+    expect(session.wallet).toBe(account.address.toLowerCase());
+    expect(typeof session.token).toBe("string");
+    const auth = { "x-session-token": session.token };
+
+    // 2. The session resolves from the header alone (no Cookie sent).
+    const who = await (await fetch(`${h.base}/v1/auth/session`, { headers: auth })).json();
+    expect(who).toMatchObject({ signedIn: true, wallet: account.address.toLowerCase() });
+
+    // 3. Naming the board succeeds and echoes the wallet back.
+    const named = await fetch(`${h.base}/v1/account`, {
+      method: "PUT",
+      headers: { ...auth, "content-type": "application/json" },
+      body: JSON.stringify({ label: "Acme" }),
+    });
+    expect(named.status).toBe(200);
+    expect(await named.json()).toMatchObject({
+      wallet: account.address.toLowerCase(),
+      label: "Acme",
+      settingsSet: true,
+    });
+
+    // 4. Creating a campaign binds it to the header-derived wallet — no
+    //    "advertiser is required".
+    const created = await fetch(`${h.base}/v1/campaigns`, {
+      method: "POST",
+      headers: { ...auth, "content-type": "application/json" },
+      body: JSON.stringify({ message: "buy our thing", url: "https://acme.example", bidPerBlockUsd: 2 }),
+    });
+    expect(created.status).toBe(201);
+    const { campaign } = await created.json();
+    expect(campaign.advertiser).toBe(account.address.toLowerCase());
+
+    // 5. Without the header (and no cookie) it's an anonymous request again.
+    const anon = await (await fetch(`${h.base}/v1/auth/session`)).json();
+    expect(anon).toEqual({ signedIn: false });
   });
 });

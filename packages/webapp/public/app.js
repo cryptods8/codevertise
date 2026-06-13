@@ -73,6 +73,7 @@ async function signIn() {
       body: JSON.stringify({ nonce, signature }),
     });
     if (status !== 200) throw new Error(body?.error ?? `${status}`);
+    setSessionToken(body.token); // survives webviews that drop the session cookie
     session = body;
     renderSession();
     toast(`✓ signed in as ${shortWallet(session.wallet)}`);
@@ -91,6 +92,7 @@ async function signOut() {
   try {
     await api("/v1/auth/logout", { method: "POST" });
   } catch {}
+  setSessionToken(null);
   session = null;
   renderSession();
   toast("signed out");
@@ -257,8 +259,30 @@ function toast(msg, kind = "ok") {
   }, 3500);
 }
 
+// The session token is mirrored client-side so it can ride an X-Session-Token
+// header: inside a Farcaster Mini App webview the page is cross-site to the
+// host, so the session cookie is third-party and frequently dropped.
+const SESSION_TOKEN_KEY = "cv_session_token";
+function getSessionToken() {
+  try {
+    return localStorage.getItem(SESSION_TOKEN_KEY) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+function setSessionToken(token) {
+  try {
+    if (token) localStorage.setItem(SESSION_TOKEN_KEY, token);
+    else localStorage.removeItem(SESSION_TOKEN_KEY);
+  } catch {}
+}
+
 async function api(path, opts = {}) {
-  const res = await fetch(path, opts);
+  const token = getSessionToken();
+  // credentials:"include" keeps the cookie path working where 3p cookies are
+  // allowed; the header is the fallback where they aren't.
+  const headers = token ? { ...(opts.headers ?? {}), "x-session-token": token } : opts.headers;
+  const res = await fetch(path, { credentials: "include", ...opts, ...(headers ? { headers } : {}) });
   const body = res.status === 204 ? null : await res.json();
   if (!res.ok && res.status !== 402 && res.status !== 401)
     throw new Error(body?.error ? JSON.stringify(body.error) : `${res.status}`);

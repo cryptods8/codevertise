@@ -142,8 +142,15 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
   // just an EIP-191 signature over a server-authored challenge.
   const chainId = Number(cfg.network.split(":")[1]) || 1;
   const auth = new AdvertiserAuth(market.db, chainId);
+  // The session token arrives as the HttpOnly cookie in a normal browser, but
+  // inside an embedded webview (Farcaster Mini App) the page's top-level site
+  // is the host app, so the cookie is third-party and often dropped entirely.
+  // The client mirrors the token in an X-Session-Token header for that case.
+  const SESSION_HEADER = "x-session-token";
+  const sessionToken = (req: Request): string | undefined =>
+    cookieValue(req, SESSION_COOKIE) ?? req.header(SESSION_HEADER) ?? undefined;
   const sessionWallet = (req: Request): string | undefined =>
-    auth.sessionWallet(cookieValue(req, SESSION_COOKIE));
+    auth.sessionWallet(sessionToken(req));
 
   /** Campaign-owner gate: manage key, signed-in owner wallet, or admin token. */
   const canManage = (req: Request, campaignId: string): boolean => {
@@ -235,8 +242,16 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     return false;
   };
 
+  // Over HTTPS, mark the cookie SameSite=None;Secure so it survives the
+  // cross-site embedding of a Mini App webview; on plain-HTTP local dev fall
+  // back to Lax (browsers reject SameSite=None without Secure). Detect TLS via
+  // req.secure (when trust-proxy is on) or the proxy's X-Forwarded-Proto.
+  const isHttps = (req: Request): boolean =>
+    req.secure || req.headers["x-forwarded-proto"] === "https";
   const sessionCookieOpts = (req: Request) =>
-    ({ httpOnly: true, sameSite: "lax", secure: req.secure, path: "/" }) as const;
+    isHttps(req)
+      ? ({ httpOnly: true, sameSite: "none", secure: true, path: "/" } as const)
+      : ({ httpOnly: true, sameSite: "lax", secure: false, path: "/" } as const);
 
   // Step 1: the server authors the exact EIP-4361 message to sign. The
   // challenge is bound to the address and expires in minutes.
@@ -272,7 +287,9 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
       ...sessionCookieOpts(req),
       maxAge: SESSION_TTL_MS,
     });
-    res.json(accountView(advertiser));
+    // Also hand the token back in the body so an embedded webview (where the
+    // cookie may be blocked) can replay it via the X-Session-Token header.
+    res.json({ ...accountView(advertiser), token: session.token });
   }));
 
   app.get("/v1/auth/session", (req, res) => {
@@ -282,7 +299,7 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
   });
 
   app.post("/v1/auth/logout", (req, res) => {
-    const token = cookieValue(req, SESSION_COOKIE);
+    const token = sessionToken(req);
     if (token) auth.deleteSession(token);
     res.clearCookie(SESSION_COOKIE, sessionCookieOpts(req));
     res.json({ signedIn: false });
