@@ -4,15 +4,34 @@
   "description": "Claude Code status line that pays you: Codevertise sponsored lines, earnings in USDC",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://codevertise.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/codevertise/codevertise.git",
+    "directory": "packages/claude-code"
+  },
+  "keywords": [
+    "claude-code",
+    "status-line",
+    "codevertise",
+    "usdc",
+    "x402",
+    "ads"
+  ],
   "bin": {
     "codevertise": "dist/cli.js",
     "codevertise-statusline": "dist/statusline.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build",
     "test": "vitest run --passWithNoTests"
   },
   "engines": {

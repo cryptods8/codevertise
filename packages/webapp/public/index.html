@@ -35,7 +35,7 @@
     <header class="hero">
       <div class="wrap">
         <p class="eyebrow">sponsored lines · settled in USDC over HTTP&nbsp;402</p>
-        <h2>The agent's <span class="hl">thinking…</span> line is the most-watched pixel in a developer's day.</h2>
+        <h2>The <span class="hl">status line</span> under your AI coding agent is the most-watched line in a developer's day.</h2>
         <p class="lede">
           Codevertise is a block-auction marketplace for that line. <b>Advertisers</b> — people or
           autonomous agents — rent it by funding a campaign in USDC; <b>developers</b> who run the
@@ -110,7 +110,7 @@
       <div class="wrap">
         <div class="section-head">
           <h3>how the market works</h3>
-          <p>kickbacks.ai-style block economics, crypto-native rails. Every figure below is live from the running marketplace.</p>
+          <p>Block-auction economics, crypto-native rails. Every figure below is live from the running marketplace.</p>
         </div>
         <div class="facts" id="facts">
           <div class="fact"><span>ad unit</span><b data-fact="block">1 block = 1,000 × 5s</b></div>
@@ -152,18 +152,13 @@
             <p class="who">developer · publisher</p>
             <h4>Install the extension</h4>
             <ol class="steps">
-              <li>Build the workspace, then install the CLI globally.</li>
-              <li>Point it at a marketplace with your payout wallet.</li>
+              <li>Install the CLI globally with your payout wallet.</li>
               <li>Open a new Claude Code session — the line is live.</li>
               <li>Check earnings and withdraw once you clear $10.</li>
             </ol>
-<pre translate="no"><span class="c"># from the repo root</span>
-npm install &amp;&amp; npm run build
-npm install -g ./packages/claude-code
+<pre translate="no">npm install -g @codevertise/claude-code
 
-codevertise <span class="k">install</span> \
-  --wallet 0xYourPayoutAddress \
-  --endpoint https://your-marketplace.example
+codevertise <span class="k">install</span> --wallet 0xYourPayoutAddress
 
 codevertise <span class="k">earnings</span>   <span class="c"># the ledger</span>
 codevertise <span class="k">payout</span>     <span class="c"># USDC on Base, ≥ $10</span></pre>

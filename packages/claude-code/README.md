@@ -1,8 +1,8 @@
 # @codevertise/claude-code
 
-**A Claude Code status line that pays you.** While Claude is thinking, the most-watched line in
-your terminal shows a sponsored message from the Codevertise auction — and the publisher share of every impression
-(40% by default) accrues to your wallet in USDC.
+**A Claude Code status line that pays you.** Your Claude Code status line — the most-watched line in
+your terminal — shows a sponsored message from the Codevertise auction, and the publisher share of
+every impression (40% by default) accrues to your wallet in USDC.
 
 ```
 Fable · my-project │ ⛁ $0.0008 │ [ad] ShipFast CI — your agent already pays for this slot
@@ -11,16 +11,15 @@ Fable · my-project │ ⛁ $0.0008 │ [ad] ShipFast CI — your agent already 
 ## Install
 
 ```bash
-# from the repo root
-npm install && npm run build
-npm install -g ./packages/claude-code
-
-codevertise install --wallet 0xYourPayoutAddress --endpoint https://your-marketplace.example
+npm install -g @codevertise/claude-code
+codevertise install --wallet 0xYourPayoutAddress
 ```
 
-That's it — `codevertise install` wires `statusLine` into `~/.claude/settings.json` (a timestamped
-backup is written first, and an existing custom status line is preserved: it keeps rendering and the
-sponsored segment is appended to it). Open a new Claude Code session and the line is live.
+That's it — two commands, no config. `codevertise install` wires `statusLine` into
+`~/.claude/settings.json` (a timestamped backup is written first, and an existing custom status line
+is preserved: it keeps rendering and the sponsored segment is appended to it). The marketplace
+defaults to `https://codevertise.dev`; pass `--endpoint URL` only if you self-host. Open a new
+Claude Code session and the line is live.
 
 ## Commands
 

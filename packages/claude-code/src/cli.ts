@@ -61,7 +61,7 @@ function install(): void {
     process.exit(1);
   }
   const cfg: Config = {
-    endpoint: arg("endpoint") ?? loadConfig()?.endpoint ?? "http://localhost:4021",
+    endpoint: arg("endpoint") ?? loadConfig()?.endpoint ?? "https://codevertise.dev",
     wallet,
     surface: arg("surface") ?? "claude-code-statusline",
     passthrough: loadConfig()?.passthrough,
@@ -82,7 +82,7 @@ function install(): void {
 
   console.log(`✓ statusLine wired in ${settingsPath()}${backup ? ` (backup: ${backup})` : ""}`);
   console.log(`✓ publisher wallet ${wallet} → ${cfg.endpoint}`);
-  console.log("restart Claude Code (or open a new session) and the sponsored line appears while Claude thinks.");
+  console.log("restart Claude Code (or open a new session) and the sponsored line appears in your status line.");
   console.log("earnings accrue per 5s impression; check with: codevertise earnings");
 }
 

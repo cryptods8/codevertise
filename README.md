@@ -2,9 +2,8 @@
 
 **Sponsored lines on AI coding-agent surfaces, paid in USDC over HTTP 402.**
 
-The most-watched line in a developer's day is the agent's "thinking…" spinner. Codevertise is a
-[kickbacks.ai](https://kickbacks.ai)-style marketplace for that line — same block-auction economics,
-but the payment rails are crypto-native:
+The most-watched line in a developer's day is the status line under their AI coding agent.
+Codevertise is a block-auction marketplace for that line, with crypto-native payment rails:
 
 - **Advertisers fund campaigns through [x402](https://github.com/coinbase/x402)** (Coinbase's HTTP-402
   protocol): hit the fund endpoint, get a `402 Payment Required`, retry with a signed USDC payment.
@@ -15,7 +14,7 @@ but the payment rails are crypto-native:
   the paywall is a pluggable middleware on a single route, so an `mppx` rail can be added without
   touching marketplace logic.
 
-## Marketplace model (kickbacks.ai economics)
+## Marketplace model
 
 | Concept | Rule |
 |---|---|
@@ -38,7 +37,7 @@ All money is integer **micro-USD** internally (1e6 = $1), which is exactly USDC'
 | `@codevertise/sdk` | Publisher SDK: fetch the winning ad, view-threshold impressions, clicks, earnings, payout |
 | `@codevertise/agent-bidder` | Example autonomous advertiser: reads the board, outbids, pays the 402 |
 | `@codevertise/cli-demo` | Example publisher: a spinner whose status line is Codevertise inventory |
-| `@codevertise/claude-code` | **The real publisher client**: a Claude Code status-line extension — `npm i -g ./packages/claude-code && codevertise install --wallet 0xYou` ([docs](packages/claude-code/README.md)) |
+| `@codevertise/claude-code` | **The real publisher client**: a Claude Code status-line extension — `npm i -g @codevertise/claude-code && codevertise install --wallet 0xYou` ([docs](packages/claude-code/README.md)) |
 | `@codevertise/webapp` | **Landing page** at `/` (purpose + getting-started for advertisers, developers, and agents) plus the **advertiser console** at `/console.html` (static SPA, no build step) — live auction board, create/fund/raise campaigns, per-campaign stats |
 
 ## Quickstart (mock rail — no chain needed)

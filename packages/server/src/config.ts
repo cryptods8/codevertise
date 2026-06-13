@@ -11,7 +11,7 @@ export interface Config {
   /** Optional treasury key; when set, publisher payouts are sent on-chain in USDC. */
   payoutPrivateKey?: string;
 
-  // Marketplace economics (kickbacks.ai-style block model)
+  // Marketplace economics (block-auction model)
   blockImpressions: number; // impressions per block
   minBidMicro: number; // minimum bid per block, micro-USD
   minBidIncrementMicro: number; // English-auction minimum raise
