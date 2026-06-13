@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0b0e14" />
+  <title>Codevertise — Advertiser Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">skip to content</a>
+  <header>
+    <a class="brand" href="/" aria-label="codevertise home">
+      <span class="logo" aria-hidden="true">▮▯▮</span>
+      <div>
+        <h1 translate="no">codevertise</h1>
+        <p class="tagline">advertiser console — the status line is for rent, settled in USDC over HTTP 402</p>
+      </div>
+    </a>
+    <div class="identity">
+      <div id="signed-out" hidden>
+        <button id="sign-in" class="primary" type="button">sign in with wallet</button>
+        <p class="signin-note">sign a free message — no transaction, no gas</p>
+      </div>
+      <div id="signed-in" hidden>
+        <div class="account">
+          <span id="acct-label">—</span>
+          <span id="acct-wallet" class="mono"></span>
+        </div>
+        <button id="open-settings" class="ghost" type="button">settings</button>
+        <button id="sign-out" class="ghost" type="button">sign out</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="panel" id="market-panel">
+      <h2>market</h2>
+      <div class="market-facts" id="market-facts">loading…</div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>live auction board</h2>
+          <p class="hint">English ascending auction · highest funded bid serves · 1 block = 1,000 × 5s impressions</p>
+        </div>
+        <div class="create-cta">
+          <button id="open-create" class="primary" type="button" disabled>+ new campaign</button>
+          <p class="hint gate-hint" id="create-gate"><button class="linklike" id="create-gate-signin" type="button">sign in with your wallet</button> to create campaigns</p>
+        </div>
+      </div>
+      <table id="board">
+        <thead>
+          <tr><th>#</th><th>campaign</th><th>advertiser</th><th>bid / block</th><th>remaining</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p class="empty" id="board-empty" hidden>the board is empty — create a campaign and yours serves first.</p>
+    </section>
+
+    <section class="panel">
+      <h2>my campaigns</h2>
+      <p class="hint" id="mine-hint">campaigns created while signed in follow your wallet — manage them from any browser. tap a campaign to manage it.</p>
+      <div id="mine"></div>
+    </section>
+  </main>
+
+  <dialog id="create-dialog">
+    <div class="dialog-head">
+      <h3>new campaign</h3>
+      <button class="icon-btn" type="button" data-close aria-label="close">✕</button>
+    </div>
+    <form id="create-form">
+      <div class="field">
+        <label for="message">status line creative <span id="charcount" class="count">0/80</span></label>
+        <input id="message" name="message" maxlength="80" placeholder="Your product — one tasteful line while Claude thinks…" autocomplete="off" required />
+      </div>
+      <div class="preview">
+        <span class="preview-label">status line preview</span>
+        <code id="preview-line">Fable · my-project │ ⛁ $0.0123 │ [ad] <span id="preview-msg">your message here</span></code>
+      </div>
+      <div class="field">
+        <label for="url">landing url</label>
+        <input id="url" name="url" type="url" placeholder="https://your-product.example…" autocomplete="off" spellcheck="false" required />
+      </div>
+      <div class="field">
+        <label for="bid">bid $ / block</label>
+        <input id="bid" name="bid" type="number" min="1" step="0.5" value="1.50" required inputmode="decimal" autocomplete="off" />
+        <p class="hint" id="bid-hint"></p>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" data-close>cancel</button>
+        <button type="submit" class="primary">create campaign</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="manage-dialog">
+    <div id="manage-body"></div>
+  </dialog>
+
+  <dialog id="settings-dialog">
+    <div class="dialog-head">
+      <h3>account settings</h3>
+      <button class="icon-btn settings-close-btn" type="button" data-close aria-label="close">✕</button>
+    </div>
+    <p class="notice" id="settings-welcome" hidden>welcome! pick your public board name to finish setting up — your campaigns appear on the auction board under it.</p>
+    <form id="settings-form">
+      <div class="field">
+        <label for="settings-wallet">signed-in wallet · private — funds campaigns and receives refunds</label>
+        <input id="settings-wallet" readonly spellcheck="false" translate="no" />
+      </div>
+      <div class="field">
+        <label for="settings-label">board name · public</label>
+        <input id="settings-label" name="board-name" maxlength="32" required placeholder="your brand…" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="ghost settings-close-btn" data-close>cancel</button>
+        <button type="submit" class="primary">save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="pay-dialog">
+    <h3>402 Payment Required</h3>
+    <p id="pay-summary"></p>
+    <pre id="pay-challenge"></pre>
+    <p class="hint">no browser wallet detected — connect one (MetaMask, Coinbase Wallet) to pay here, or pay programmatically (your agent already can):</p>
+    <pre id="pay-snippet"></pre>
+    <div class="dialog-actions"><button id="pay-close" class="ghost" type="button">close</button></div>
+  </dialog>
+
+  <div id="toast" popover="manual" role="status" aria-live="polite"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

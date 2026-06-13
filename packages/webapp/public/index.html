@@ -4,137 +4,236 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#0b0e14" />
-  <title>Codevertise — Advertiser Console</title>
+  <title>Codevertise — rent the AI coding agent's status line, paid in USDC over HTTP 402</title>
+  <meta name="description" content="A marketplace for sponsored lines on AI coding-agent surfaces. Advertisers (people and agents) fund campaigns in USDC over x402; developers earn the publisher share by running the status-line extension." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="landing.css" />
 </head>
 <body>
   <a class="skip-link" href="#main">skip to content</a>
-  <header>
-    <div class="brand">
-      <span class="logo" aria-hidden="true">▮▯▮</span>
-      <div>
-        <h1 translate="no">codevertise</h1>
-        <p class="tagline">advertiser console — the status line is for rent, settled in USDC over HTTP 402</p>
-      </div>
+
+  <div class="topbar">
+    <div class="wrap">
+      <a class="brand" href="/" aria-label="codevertise home">
+        <span class="logo" aria-hidden="true">▮▯▮</span>
+        <b translate="no">codevertise</b>
+      </a>
+      <nav class="nav" aria-label="primary">
+        <a href="#advertisers" class="label-hide">advertisers</a>
+        <a href="#developers" class="label-hide">developers</a>
+        <a href="#agents" class="label-hide">agents</a>
+        <a href="#start" class="label-hide">get started</a>
+        <a class="btn btn-primary btn-sm" href="/console.html">open console</a>
+      </nav>
     </div>
-    <div class="identity">
-      <div id="signed-out" hidden>
-        <button id="sign-in" class="primary" type="button">sign in with wallet</button>
-        <p class="signin-note">sign a free message — no transaction, no gas</p>
-      </div>
-      <div id="signed-in" hidden>
-        <div class="account">
-          <span id="acct-label">—</span>
-          <span id="acct-wallet" class="mono"></span>
-        </div>
-        <button id="open-settings" class="ghost" type="button">settings</button>
-        <button id="sign-out" class="ghost" type="button">sign out</button>
-      </div>
-    </div>
-  </header>
+  </div>
 
   <main id="main">
-    <section class="panel" id="market-panel">
-      <h2>market</h2>
-      <div class="market-facts" id="market-facts">loading…</div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head">
-        <div>
-          <h2>live auction board</h2>
-          <p class="hint">English ascending auction · highest funded bid serves · 1 block = 1,000 × 5s impressions</p>
+    <!-- ───────────── hero ───────────── -->
+    <header class="hero">
+      <div class="wrap">
+        <p class="eyebrow">sponsored lines · settled in USDC over HTTP&nbsp;402</p>
+        <h2>The agent's <span class="hl">thinking…</span> line is the most-watched pixel in a developer's day.</h2>
+        <p class="lede">
+          Codevertise is a block-auction marketplace for that line. <b>Advertisers</b> — people or
+          autonomous agents — rent it by funding a campaign in USDC; <b>developers</b> who run the
+          status-line extension earn the publisher share, paid on-chain to their wallet. No card, no
+          signup beyond a wallet, because the whole payment is one signed HTTP&nbsp;402.
+        </p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="/console.html">Launch the advertiser console →</a>
+          <a class="btn btn-ghost" href="#developers">Earn as a developer</a>
         </div>
-        <div class="create-cta">
-          <button id="open-create" class="primary" type="button" disabled>+ new campaign</button>
-          <p class="hint gate-hint" id="create-gate"><button class="linklike" id="create-gate-signin" type="button">sign in with your wallet</button> to create campaigns</p>
+        <div class="statusline-demo" aria-label="example status line">
+          <span class="lbl">what it looks like in the terminal</span>
+          <code translate="no">Fable · my-project │ <span class="earn">⛁ $0.0008</span> │ <span class="tag">[ad]</span> <span class="ad">ShipFast CI — your agent already pays for this slot in USDC</span></code>
         </div>
       </div>
-      <table id="board">
-        <thead>
-          <tr><th>#</th><th>campaign</th><th>advertiser</th><th>bid / block</th><th>remaining</th><th></th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-      <p class="empty" id="board-empty" hidden>the board is empty — create a campaign and yours serves first.</p>
+    </header>
+
+    <!-- ───────────── who it's for ───────────── -->
+    <section id="who">
+      <div class="wrap">
+        <div class="section-head">
+          <h3>who it's for</h3>
+          <p>Three sides, one auction. The same block-economics and the same 402 rail serve all of them.</p>
+        </div>
+        <div class="cards">
+
+          <article class="card" id="advertisers">
+            <div class="ico" aria-hidden="true">📣</div>
+            <p class="who">advertiser · human</p>
+            <h4>Put your product on the line developers stare at</h4>
+            <p>Reach engineers in deep-work flow, on the surface they watch most. Tasteful, one line, no banner.</p>
+            <ul>
+              <li>Sign in with your wallet — a free signature, no transaction</li>
+              <li>Write one status line, set a bid, fund with USDC in-browser</li>
+              <li>Manage from any browser; pause, raise, cancel and withdraw anytime</li>
+            </ul>
+            <p class="card-cta"><a href="#start-advertiser">How to start as an advertiser →</a></p>
+          </article>
+
+          <article class="card" id="developers">
+            <div class="ico" aria-hidden="true">💻</div>
+            <p class="who">developer · publisher</p>
+            <h4>A status line that pays you</h4>
+            <p>Run the Claude Code extension and the publisher share of every impression (40% by default) accrues to your wallet in USDC.</p>
+            <ul>
+              <li>Renders from local cache — never blocks Claude on the network</li>
+              <li>An impression counts only after the ad showed for its full 5s slot</li>
+              <li>The only identity is the wallet you get paid on — no telemetry, no KYC</li>
+            </ul>
+            <p class="card-cta"><a href="#start-developer">How to install the extension →</a></p>
+          </article>
+
+          <article class="card" id="agents">
+            <div class="ico" aria-hidden="true">🤖</div>
+            <p class="who">advertiser · agent</p>
+            <h4>Your agent buys its own slot</h4>
+            <p>No dashboard, no human in the loop. The marketplace contract is agent-readable and the payment is a standard x402 flow.</p>
+            <ul>
+              <li><code>GET /v1/info</code> &amp; <code>/v1/auction</code> — read the contract and the board</li>
+              <li><code>POST /v1/campaigns</code> then <code>POST /v1/fund</code> — pay the 402 with a signed USDC transfer</li>
+              <li>Outbid, pause, withdraw — all over the same HTTP API</li>
+            </ul>
+            <p class="card-cta"><a href="#start-agent">How an agent gets on the board →</a></p>
+          </article>
+
+        </div>
+      </div>
     </section>
 
-    <section class="panel">
-      <h2>my campaigns</h2>
-      <p class="hint" id="mine-hint">campaigns created while signed in follow your wallet — manage them from any browser. tap a campaign to manage it.</p>
-      <div id="mine"></div>
+    <!-- ───────────── how it works / economics ───────────── -->
+    <section id="how">
+      <div class="wrap">
+        <div class="section-head">
+          <h3>how the market works</h3>
+          <p>kickbacks.ai-style block economics, crypto-native rails. Every figure below is live from the running marketplace.</p>
+        </div>
+        <div class="facts" id="facts">
+          <div class="fact"><span>ad unit</span><b data-fact="block">1 block = 1,000 × 5s</b></div>
+          <div class="fact"><span>auction</span><b data-fact="auction">English ascending</b></div>
+          <div class="fact"><span>min bid</span><b data-fact="minBid">$1.00 / block</b></div>
+          <div class="fact"><span>publisher share</span><b data-fact="share">40%</b></div>
+          <div class="fact"><span>click rate</span><b data-fact="click">50× impression</b></div>
+          <div class="fact"><span>payouts</span><b data-fact="payout">USDC on Base</b></div>
+          <div class="fact"><span>min payout</span><b data-fact="minPayout">$10.00</b></div>
+          <div class="fact"><span>privacy</span><b>wallets never public</b></div>
+        </div>
+        <p class="rail-badge" id="rail-badge" translate="no">x402 · USDC · Base</p>
+      </div>
     </section>
+
+    <!-- ───────────── get started ───────────── -->
+    <section id="start">
+      <div class="wrap">
+        <div class="section-head">
+          <h3>get started</h3>
+          <p>Pick your side. Each track is a handful of steps from zero to live.</p>
+        </div>
+        <div class="tracks">
+
+          <article class="track" id="start-advertiser">
+            <p class="who">advertiser · human</p>
+            <h4>Run a campaign</h4>
+            <ol class="steps">
+              <li>Open the <a href="/console.html">advertiser console</a>.</li>
+              <li>Sign in with your wallet — a free signature, no gas.</li>
+              <li>Set your public board name when prompted.</li>
+              <li>Write your status line (≤80 chars), a landing URL, and a bid.</li>
+              <li>Fund it through the in-browser 402 — you're on the board the moment escrow clears.</li>
+            </ol>
+            <a class="btn btn-primary btn-sm" href="/console.html">Open the console →</a>
+          </article>
+
+          <article class="track" id="start-developer">
+            <p class="who">developer · publisher</p>
+            <h4>Install the extension</h4>
+            <ol class="steps">
+              <li>Build the workspace, then install the CLI globally.</li>
+              <li>Point it at a marketplace with your payout wallet.</li>
+              <li>Open a new Claude Code session — the line is live.</li>
+              <li>Check earnings and withdraw once you clear $10.</li>
+            </ol>
+<pre translate="no"><span class="c"># from the repo root</span>
+npm install &amp;&amp; npm run build
+npm install -g ./packages/claude-code
+
+codevertise <span class="k">install</span> \
+  --wallet 0xYourPayoutAddress \
+  --endpoint https://your-marketplace.example
+
+codevertise <span class="k">earnings</span>   <span class="c"># the ledger</span>
+codevertise <span class="k">payout</span>     <span class="c"># USDC on Base, ≥ $10</span></pre>
+          </article>
+
+          <article class="track" id="start-agent">
+            <p class="who">advertiser · agent</p>
+            <h4>Bid over the API</h4>
+            <ol class="steps">
+              <li>Read the contract and board: <code>GET /v1/info</code>, <code>/v1/auction</code>.</li>
+              <li>Create a campaign — the response carries a one-time manage key.</li>
+              <li>Fund it: the first POST returns 402; retry with a signed USDC payment.</li>
+            </ol>
+<pre translate="no"><span class="c"># 1 — create</span>
+curl -X POST $API/v1/campaigns -d '{
+  <span class="k">"message"</span>: "Your agent already pays for this slot",
+  <span class="k">"url"</span>: "https://you.example",
+  <span class="k">"bidPerBlockUsd"</span>: 2 }'
+
+<span class="c"># 2 — fund (402 → pay → settle)</span>
+curl -X POST "$API/v1/fund?campaign=$ID&amp;blocks=2"
+<span class="c"># → 402 PAYMENT-REQUIRED; retry with an x402</span>
+<span class="c">#   signed USDC transfer, e.g. @x402/fetch</span></pre>
+            <p class="track-foot">Working example: <code translate="no">packages/agent-bidder</code> reads the board, outbids, and pays the 402 end to end.</p>
+          </article>
+
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <div class="wrap footer-row">
+        <div class="links">
+          <a href="/console.html">advertiser console</a>
+          <a href="/v1/info">/v1/info</a>
+          <a href="/v1/auction">/v1/auction</a>
+          <a href="/healthz">/healthz</a>
+        </div>
+        <p class="note" translate="no">codevertise · sponsored lines for AI coding agents · USDC over HTTP 402</p>
+      </div>
+    </footer>
   </main>
 
-  <dialog id="create-dialog">
-    <div class="dialog-head">
-      <h3>new campaign</h3>
-      <button class="icon-btn" type="button" data-close aria-label="close">✕</button>
-    </div>
-    <form id="create-form">
-      <div class="field">
-        <label for="message">status line creative <span id="charcount" class="count">0/80</span></label>
-        <input id="message" name="message" maxlength="80" placeholder="Your product — one tasteful line while Claude thinks…" autocomplete="off" required />
-      </div>
-      <div class="preview">
-        <span class="preview-label">status line preview</span>
-        <code id="preview-line">Fable · my-project │ ⛁ $0.0123 │ [ad] <span id="preview-msg">your message here</span></code>
-      </div>
-      <div class="field">
-        <label for="url">landing url</label>
-        <input id="url" name="url" type="url" placeholder="https://your-product.example…" autocomplete="off" spellcheck="false" required />
-      </div>
-      <div class="field">
-        <label for="bid">bid $ / block</label>
-        <input id="bid" name="bid" type="number" min="1" step="0.5" value="1.50" required inputmode="decimal" autocomplete="off" />
-        <p class="hint" id="bid-hint"></p>
-      </div>
-      <div class="dialog-actions">
-        <button type="button" class="ghost" data-close>cancel</button>
-        <button type="submit" class="primary">create campaign</button>
-      </div>
-    </form>
-  </dialog>
+  <script>
+    // Progressive enhancement: replace the hardcoded defaults with the live
+    // marketplace contract so the page is always accurate to this deployment.
+    // Falls back silently to the static values if /v1/info is unreachable.
+    (async () => {
+      try {
+        const r = await fetch("/v1/info");
+        if (!r.ok) return;
+        const info = await r.json();
+        const usd = (n) => `$${Number(n).toFixed(2)}`;
+        const set = (k, v) => {
+          const el = document.querySelector(`[data-fact="${k}"]`);
+          if (el && v != null) el.textContent = v;
+        };
+        set("block", info.adUnit?.block ? `1 block = ${info.adUnit.block}` : null);
+        set("minBid", info.adUnit?.minBidUsd != null ? `${usd(info.adUnit.minBidUsd)} / block` : null);
+        set("share", info.publisherShare != null ? `${Math.round(info.publisherShare * 100)}%` : null);
+        set("click", info.adUnit?.clickMultiplier != null ? `${info.adUnit.clickMultiplier}× impression` : null);
+        set("minPayout", info.minPayoutUsd != null ? usd(info.minPayoutUsd) : null);
 
-  <dialog id="manage-dialog">
-    <div id="manage-body"></div>
-  </dialog>
-
-  <dialog id="settings-dialog">
-    <div class="dialog-head">
-      <h3>account settings</h3>
-      <button class="icon-btn settings-close-btn" type="button" data-close aria-label="close">✕</button>
-    </div>
-    <p class="notice" id="settings-welcome" hidden>welcome! pick your public board name to finish setting up — your campaigns appear on the auction board under it.</p>
-    <form id="settings-form">
-      <div class="field">
-        <label for="settings-wallet">signed-in wallet · private — funds campaigns and receives refunds</label>
-        <input id="settings-wallet" readonly spellcheck="false" translate="no" />
-      </div>
-      <div class="field">
-        <label for="settings-label">board name · public</label>
-        <input id="settings-label" name="board-name" maxlength="32" required placeholder="your brand…" autocomplete="off" spellcheck="false" />
-      </div>
-      <div class="dialog-actions">
-        <button type="button" class="ghost settings-close-btn" data-close>cancel</button>
-        <button type="submit" class="primary">save</button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog id="pay-dialog">
-    <h3>402 Payment Required</h3>
-    <p id="pay-summary"></p>
-    <pre id="pay-challenge"></pre>
-    <p class="hint">no browser wallet detected — connect one (MetaMask, Coinbase Wallet) to pay here, or pay programmatically (your agent already can):</p>
-    <pre id="pay-snippet"></pre>
-    <div class="dialog-actions"><button id="pay-close" class="ghost" type="button">close</button></div>
-  </dialog>
-
-  <div id="toast" popover="manual" role="status" aria-live="polite"></div>
-  <script type="module" src="app.js"></script>
+        const rail = info.paymentRails?.primary;
+        if (rail) {
+          const badge = document.getElementById("rail-badge");
+          if (badge) badge.textContent = `${rail.rail} · ${rail.asset} · ${rail.mode}`;
+        }
+      } catch {}
+    })();
+  </script>
 </body>
 </html>

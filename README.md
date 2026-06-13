@@ -39,14 +39,15 @@ All money is integer **micro-USD** internally (1e6 = $1), which is exactly USDC'
 | `@codevertise/agent-bidder` | Example autonomous advertiser: reads the board, outbids, pays the 402 |
 | `@codevertise/cli-demo` | Example publisher: a spinner whose status line is Codevertise inventory |
 | `@codevertise/claude-code` | **The real publisher client**: a Claude Code status-line extension — `npm i -g ./packages/claude-code && codevertise install --wallet 0xYou` ([docs](packages/claude-code/README.md)) |
-| `@codevertise/webapp` | **Advertiser console** (static SPA, no build step) served by the server at `/` — live auction board, create/fund/raise campaigns, per-campaign stats |
+| `@codevertise/webapp` | **Landing page** at `/` (purpose + getting-started for advertisers, developers, and agents) plus the **advertiser console** at `/console.html` (static SPA, no build step) — live auction board, create/fund/raise campaigns, per-campaign stats |
 
 ## Quickstart (mock rail — no chain needed)
 
 ```bash
 npm install
 npm run dev:server                                   # marketplace on :4021, 2 house ads seeded
-                                                     # advertiser console: http://localhost:4021/
+                                                     # landing page:       http://localhost:4021/
+                                                     # advertiser console: http://localhost:4021/console.html
 
 # in another terminal — an agent buys the top slot:
 MOCK=1 npx tsx packages/agent-bidder/src/index.ts
