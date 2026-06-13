@@ -1,18 +1,159 @@
 /* Codevertise advertiser console — vanilla JS, talks to the marketplace API on the same origin. */
 
+import {
+  createPaymentSignatureHeader,
+  parsePaymentRequired,
+  parsePaymentResponse,
+} from "./x402-pay.js";
+
 const $ = (sel) => document.querySelector(sel);
 const USD = 1_000_000;
 const fmt = (micro, dp = 2) => `$${(micro / USD).toFixed(dp)}`;
+const shortWallet = (w) => `${w.slice(0, 6)}…${w.slice(-4)}`;
 
 let info = null;
 let board = [];
 
-const wallet = () => $("#wallet").value.trim();
-const advLabel = () => $("#adv-label").value.trim();
+// ---- SIWE session (server-side, cookie-backed — works from any browser) ----
 
-// My campaigns = campaigns whose manage key this browser holds. The key is
-// issued once at creation and stored in localStorage; the API never lists
-// campaigns by wallet (that would let anyone enumerate an advertiser).
+let session = null; // { wallet, label, settingsSet } or null
+
+const eth = () => window.ethereum;
+
+async function loadSession() {
+  try {
+    const { body } = await api("/v1/auth/session");
+    session = body.signedIn ? body : null;
+  } catch {
+    session = null;
+  }
+  renderSession();
+  if (session && !session.settingsSet) openSettings({ forced: true });
+}
+
+async function signIn() {
+  if (!eth()) {
+    toast("no browser wallet found — install MetaMask or Coinbase Wallet", "err");
+    return;
+  }
+  const btn = $("#sign-in");
+  btn.disabled = true;
+  btn.textContent = "check your wallet…";
+  try {
+    const [account] = await eth().request({ method: "eth_requestAccounts" });
+    if (!account) return;
+    const { nonce, message } = (await api(`/v1/auth/nonce?address=${account}`)).body;
+    // personal_sign takes the message hex-encoded; the wallet shows it as text.
+    const hex =
+      "0x" + [...new TextEncoder().encode(message)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const signature = await eth().request({ method: "personal_sign", params: [hex, account] });
+    const { status, body } = await api("/v1/auth/verify", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ nonce, signature }),
+    });
+    if (status !== 200) throw new Error(body?.error ?? `${status}`);
+    session = body;
+    renderSession();
+    toast(`✓ signed in as ${shortWallet(session.wallet)}`);
+    await refreshAll();
+    // First run: the board name must be picked before anything else.
+    if (!session.settingsSet) openSettings({ forced: true });
+  } catch (err) {
+    toast(`sign-in failed: ${err.message ?? err}`, "err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "sign in with wallet";
+  }
+}
+
+async function signOut() {
+  try {
+    await api("/v1/auth/logout", { method: "POST" });
+  } catch {}
+  session = null;
+  renderSession();
+  toast("signed out");
+  await refreshAll().catch(() => {});
+}
+
+function renderSession() {
+  const signedIn = !!session;
+  $("#signed-out").hidden = signedIn;
+  $("#signed-in").hidden = !signedIn;
+  if (signedIn) {
+    $("#acct-label").textContent = session.label ?? "unnamed board";
+    $("#acct-wallet").textContent = shortWallet(session.wallet);
+  }
+  // The gate: creating campaigns needs a signed-in wallet.
+  $("#open-create").disabled = !signedIn;
+  $("#create-gate").hidden = signedIn;
+}
+
+$("#sign-in").addEventListener("click", signIn);
+$("#create-gate-signin").addEventListener("click", signIn);
+$("#sign-out").addEventListener("click", signOut);
+
+// ---- account settings modal ----
+
+const settingsDialog = $("#settings-dialog");
+let settingsForced = false; // first run: no escape until the board name is saved
+
+function openSettings({ forced = false } = {}) {
+  if (!session) return;
+  settingsForced = forced;
+  $("#settings-welcome").hidden = !forced;
+  for (const b of settingsDialog.querySelectorAll(".settings-close-btn")) b.hidden = forced;
+  $("#settings-wallet").value = session.wallet;
+  $("#settings-label").value = session.label ?? "";
+  if (!settingsDialog.open) settingsDialog.showModal();
+  $("#settings-label").focus();
+}
+
+settingsDialog.addEventListener("cancel", (e) => {
+  if (settingsForced) e.preventDefault(); // Esc doesn't skip the first-run setup
+});
+
+$("#open-settings").addEventListener("click", () => openSettings());
+
+$("#settings-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const label = $("#settings-label").value.trim();
+  if (!label) return;
+  try {
+    const { body } = await api("/v1/account", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ label }),
+    });
+    session = body;
+    settingsForced = false;
+    settingsDialog.close();
+    renderSession();
+    toast("✓ settings saved");
+    await refreshAll();
+  } catch (err) {
+    toast(`save failed: ${err.message}`, "err");
+  }
+});
+
+// The x402 payment signer must be the session wallet if the provider has it
+// unlocked; any unlocked account still works (funding is open to anyone).
+async function signingAccount() {
+  if (!eth()) {
+    toast("no browser wallet found to sign the payment", "err");
+    return null;
+  }
+  const unlocked = (await eth().request({ method: "eth_accounts" })) ?? [];
+  const target = session?.wallet;
+  const match = target && unlocked.find((a) => a.toLowerCase() === target);
+  if (match) return match;
+  const requested = (await eth().request({ method: "eth_requestAccounts" }).catch(() => [])) ?? [];
+  return (target && requested.find((a) => a.toLowerCase() === target)) ?? requested[0] ?? null;
+}
+
+// Legacy manage keys: campaigns created before wallet sign-in (or over the
+// bare API) are still reachable through the key this browser holds.
 function manageKeys() {
   try {
     return JSON.parse(localStorage.getItem("cv_keys") ?? "{}");
@@ -32,24 +173,42 @@ function dropManageKey(id) {
 }
 const keyFor = (id) => manageKeys()[id];
 
+/** Auth headers for managing one campaign: the session cookie rides along
+ *  automatically; a locally-held manage key covers legacy campaigns. */
+function manageHeaders(id, extra = {}) {
+  const key = keyFor(id);
+  return key ? { ...extra, "x-manage-key": key } : extra;
+}
+
 let mine = [];
 let mineIds = new Set();
 
 async function loadMine() {
+  let rows = [];
+  if (session) {
+    try {
+      rows = (await api("/v1/me/campaigns")).body.campaigns ?? [];
+    } catch {
+      rows = [];
+    }
+  }
+  const owned = new Set(rows.map((c) => c.id));
   const keys = manageKeys();
-  const rows = await Promise.all(
-    Object.keys(keys).map(async (id) => {
-      const res = await fetch(`/v1/campaigns/${encodeURIComponent(id)}`, {
-        headers: { "x-manage-key": keys[id] },
-      });
-      if (res.status === 404) {
-        dropManageKey(id);
-        return null;
-      }
-      return res.ok ? res.json() : null;
-    }),
+  const legacy = await Promise.all(
+    Object.keys(keys)
+      .filter((id) => !owned.has(id))
+      .map(async (id) => {
+        const res = await fetch(`/v1/campaigns/${encodeURIComponent(id)}`, {
+          headers: { "x-manage-key": keys[id] },
+        });
+        if (res.status === 404) {
+          dropManageKey(id);
+          return null;
+        }
+        return res.ok ? res.json() : null;
+      }),
   );
-  mine = rows.filter(Boolean);
+  mine = [...rows, ...legacy.filter(Boolean)];
   mineIds = new Set(mine.map((c) => c.id));
 }
 
@@ -59,19 +218,60 @@ function esc(s) {
   return div.innerHTML;
 }
 
+let toastTimer;
 function toast(msg, kind = "ok") {
   const el = $("#toast");
   el.textContent = msg;
   el.className = `show ${kind}`;
-  setTimeout(() => (el.className = ""), 3500);
+  // Popover puts the toast in the top layer, above any open modal dialog
+  // (z-index alone can't — showModal() dialogs sit in the top layer too).
+  try {
+    el.showPopover?.();
+  } catch {}
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    el.className = "";
+    try {
+      el.hidePopover?.();
+    } catch {}
+  }, 3500);
 }
 
 async function api(path, opts = {}) {
   const res = await fetch(path, opts);
   const body = res.status === 204 ? null : await res.json();
-  if (!res.ok && res.status !== 402) throw new Error(body?.error ? JSON.stringify(body.error) : `${res.status}`);
+  if (!res.ok && res.status !== 402 && res.status !== 401)
+    throw new Error(body?.error ? JSON.stringify(body.error) : `${res.status}`);
   return { status: res.status, body };
 }
+
+// ---- dialogs ----
+
+const createDialog = $("#create-dialog");
+const manageDialog = $("#manage-dialog");
+
+// A click on the backdrop (the dialog element itself, not its content) closes —
+// except the forced first-run settings pass, which only "save" dismisses.
+for (const d of document.querySelectorAll("dialog")) {
+  d.addEventListener("click", (e) => {
+    if (e.target !== d) return;
+    if (d === settingsDialog && settingsForced) return;
+    d.close();
+  });
+}
+document.addEventListener("click", (e) => {
+  const closer = e.target.closest("[data-close]");
+  if (closer) closer.closest("dialog")?.close();
+});
+
+$("#open-create").addEventListener("click", () => {
+  if (info) {
+    $("#bid").min = info.adUnit.minBidUsd;
+    $("#bid-hint").textContent = `min bid $${info.adUnit.minBidUsd.toFixed(2)} / block · 1 block = ${info.adUnit.block}`;
+  }
+  createDialog.showModal();
+  $("#message").focus();
+});
 
 // ---- market facts ----
 
@@ -91,22 +291,24 @@ async function loadInfo() {
 
 async function refreshBoard() {
   board = (await api("/v1/auction")).body.board;
+  $("#board-empty").hidden = board.length > 0;
+  $("#board").style.display = board.length ? "" : "none";
   $("#board tbody").innerHTML = board
     .map((b) => {
       const isMine = mineIds.has(b.campaignId);
       return `<tr class="${isMine ? "row-mine" : ""}">
-        <td>${b.rank}</td>
-        <td class="mono" title="${esc(b.campaignId)}">${esc(b.message)}</td>
-        <td class="mono">${esc(b.advertiser)}${isMine ? " (you)" : ""}</td>
-        <td class="mono">${fmt(b.bidPerBlockMicro)}</td>
-        <td class="mono">${fmt(b.remainingMicro)}</td>
-        <td>${b.serving ? '<span class="serving">● SERVING</span>' : ""}</td>
+        <td data-l="#">${b.rank}</td>
+        <td data-l="campaign" class="mono cell-msg" title="${esc(b.campaignId)}">${esc(b.message)}</td>
+        <td data-l="advertiser" class="mono">${esc(b.advertiser)}${isMine ? " (you)" : ""}</td>
+        <td data-l="bid / block" class="mono">${fmt(b.bidPerBlockMicro)}</td>
+        <td data-l="remaining" class="mono">${fmt(b.remainingMicro)}</td>
+        <td data-l="" class="cell-serving">${b.serving ? '<span class="serving">● SERVING</span>' : ""}</td>
       </tr>`;
     })
     .join("");
 }
 
-// ---- create campaign ----
+// ---- create campaign (modal) ----
 
 $("#message").addEventListener("input", () => {
   $("#charcount").textContent = `${$("#message").value.length}/80`;
@@ -115,107 +317,325 @@ $("#message").addEventListener("input", () => {
 
 $("#create-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  if (!wallet()) return toast("enter your advertiser wallet first", "err");
+  if (!session) {
+    createDialog.close();
+    toast("sign in with your wallet first", "err");
+    return;
+  }
   try {
+    // The session carries advertiser wallet and board name — only the creative goes up.
     const { body } = await api("/v1/campaigns", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        advertiser: wallet(),
-        label: advLabel() || undefined,
         message: $("#message").value,
         url: $("#url").value,
         bidPerBlockUsd: Number($("#bid").value),
       }),
     });
-    saveManageKey(body.campaign.id, body.manageKey);
-    toast(`campaign ${body.campaign.id} created — manage key saved in this browser; fund it to start serving`);
+    if (body.manageKey) saveManageKey(body.campaign.id, body.manageKey); // API credential, kept as a local backup
+    createDialog.close();
     $("#create-form").reset();
     $("#charcount").textContent = "0/80";
     $("#preview-msg").textContent = "your message here";
+    toast(`✓ campaign created — fund it to start serving`);
     await refreshAll();
+    openManage(body.campaign.id, { focusFund: true });
   } catch (err) {
     toast(`create failed: ${err.message}`, "err");
   }
 });
 
-// ---- my campaigns ----
+// ---- my campaigns (compact list; tap to manage) ----
 
-async function renderMine() {
+function statusBadge(c) {
+  if (c.status === "cancelled") return '<span class="badge badge-dead">cancelled</span>';
+  if (needsFunding(c)) return '<span class="badge badge-unfunded">⚠ not funded</span>';
+  if (c.status === "paused") return '<span class="badge badge-warn">paused</span>';
+  const onBoard = board.find((b) => b.campaignId === c.id);
+  if (onBoard?.serving) return '<span class="badge badge-live">● serving</span>';
+  if (onBoard) return `<span class="badge">rank #${onBoard.rank}</span>`;
+  return '<span class="badge badge-warn">off board — fund it</span>';
+}
+
+const remainingOf = (c) => c.budget_micro - c.spent_micro - (c.refunded_micro ?? 0);
+const needsFunding = (c) => c.status !== "cancelled" && remainingOf(c) <= 0;
+const unfundedReason = (c) =>
+  c.budget_micro === 0 ? "no budget yet" : "budget fully spent";
+
+function renderMine() {
   if (!mine.length) {
     $("#mine-hint").style.display = "";
-    $("#mine").innerHTML = "";
+    $("#mine").innerHTML = session
+      ? '<p class="empty">no campaigns yet — hit <b>+ new campaign</b> above to put your line on the board.</p>'
+      : '<p class="empty"><b>sign in with your wallet</b> (top right) to create campaigns and manage them from any browser.</p>';
     return;
   }
   $("#mine-hint").style.display = "none";
-  const cards = await Promise.all(
-    mine.map(async (c) => {
-      const stats = (
-        await api(`/v1/campaigns/${c.id}/stats`, { headers: { "x-manage-key": keyFor(c.id) } })
-      ).body;
+  $("#mine").innerHTML = mine
+    .map((c) => {
       const pct = c.budget_micro ? Math.min(100, (c.spent_micro / c.budget_micro) * 100) : 0;
-      const onBoard = board.find((b) => b.campaignId === c.id);
-      return `<div class="campaign" data-id="${c.id}">
+      const unfunded = needsFunding(c);
+      return `<div class="campaign ${c.status === "cancelled" ? "cancelled" : ""} ${unfunded ? "unfunded" : ""}" data-id="${c.id}" role="button" tabindex="0" aria-label="manage campaign">
         <div class="top">
           <span class="msg">${esc(c.message)}</span>
-          <span class="meta">${onBoard?.serving ? '<span class="serving">● SERVING</span>' : onBoard ? `rank #${onBoard.rank}` : "off board"} · ${esc(c.id)}</span>
+          ${statusBadge(c)}
         </div>
         <div class="stats">
           <span>bid <b>${fmt(c.bid_per_block_micro)}/block</b></span>
-          <span>budget <b>${fmt(c.budget_micro)}</b></span>
           <span>spent <b>${fmt(c.spent_micro, 4)}</b></span>
-          <span>impressions <b>${stats.impressions}</b></span>
-          <span>clicks <b>${stats.clicks}</b></span>
-          <span>publishers <b>${stats.publishers}</b></span>
+          <span>budget <b>${fmt(c.budget_micro)}</b></span>
         </div>
         <div class="budgetbar"><div style="width:${pct}%"></div></div>
-        <div class="actions">
-          <label>blocks</label><input type="number" min="1" value="1" class="blocks-input" />
-          <button class="fund-btn">fund via 402</button>
-          <label>new bid $</label><input type="number" step="0.5" class="bid-input"
-            value="${((c.bid_per_block_micro + (info?.adUnit.minBidIncrementUsd ?? 0.5) * USD) / USD).toFixed(2)}" />
-          <button class="ghost raise-btn">raise bid</button>
-          <button class="ghost pause-btn">${c.status === "paused" ? "resume" : "pause"}</button>
+        ${unfunded ? `<p class="unfunded-note">${unfundedReason(c)} — this campaign is off the board and not serving.</p>` : ""}
+        <div class="card-foot">
+          <span class="meta">${esc(c.id)}</span>
+          ${
+            unfunded
+              ? `<button class="primary fund-cta" type="button">fund campaign ›</button>`
+              : `<button class="ghost manage-btn" type="button">manage ›</button>`
+          }
         </div>
       </div>`;
-    }),
-  );
-  $("#mine").innerHTML = cards.join("");
+    })
+    .join("");
 }
 
-document.addEventListener("click", async (e) => {
+$("#mine").addEventListener("click", (e) => {
   const card = e.target.closest(".campaign");
-  if (!card) return;
-  const id = card.dataset.id;
-  if (e.target.classList.contains("fund-btn")) {
-    await fund(id, Number(card.querySelector(".blocks-input").value));
-  } else if (e.target.classList.contains("raise-btn")) {
+  if (card) openManage(card.dataset.id, { focusFund: !!e.target.closest(".fund-cta") });
+});
+$("#mine").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const card = e.target.closest(".campaign");
+  if (card) {
+    e.preventDefault();
+    openManage(card.dataset.id);
+  }
+});
+
+// ---- manage dialog ----
+
+let managedId = null;
+
+function openManage(id, { focusFund = false } = {}) {
+  managedId = id;
+  renderManage()
+    .then(() => {
+      if (!focusFund) return;
+      const fund = $("#manage-body .fund-section");
+      fund?.scrollIntoView({ block: "nearest" });
+      fund?.querySelector(".blocks-input")?.focus();
+    })
+    .catch((err) => toast(`load failed: ${err.message}`, "err"));
+  if (!manageDialog.open) manageDialog.showModal();
+}
+
+manageDialog.addEventListener("close", () => {
+  managedId = null;
+  $("#manage-body").innerHTML = "";
+});
+
+async function renderManage() {
+  const c = mine.find((m) => m.id === managedId);
+  if (!c) {
+    manageDialog.close();
+    return;
+  }
+  const remaining = remainingOf(c);
+
+  if (c.status === "cancelled") {
+    // Terminal: show the refund trail, a retry if escrow is stranded, and
+    // the local remove that hides it from this list.
+    const refunds = (c.refunds ?? [])
+      .map(
+        (r) =>
+          `<span>refund <b>${fmt(r.amount_micro)}</b> → ${esc(r.wallet.slice(0, 6))}…${esc(r.wallet.slice(-4))} <b class="${r.status === "sent" ? "ok-text" : ""}">${esc(r.status)}</b>${r.tx ? ` · tx ${esc(r.tx.slice(0, 10))}…` : ""}</span>`,
+      )
+      .join("");
+    $("#manage-body").innerHTML = `
+      <div class="dialog-head">
+        <h3>manage campaign</h3>
+        <button class="icon-btn" type="button" data-close aria-label="close">✕</button>
+      </div>
+      <p class="manage-msg">${esc(c.message)}</p>
+      <p class="meta">${statusBadge(c)} · ${esc(c.id)}</p>
+      <div class="stat-grid">
+        <div class="stat"><span>budget</span><b>${fmt(c.budget_micro)}</b></div>
+        <div class="stat"><span>spent</span><b>${fmt(c.spent_micro, 4)}</b></div>
+        <div class="stat"><span>withdrawn</span><b>${fmt(c.refunded_micro ?? 0)}</b></div>
+        ${remaining > 0 ? `<div class="stat"><span>still in escrow</span><b>${fmt(remaining, 4)}</b></div>` : ""}
+      </div>
+      ${refunds ? `<div class="refunds">${refunds}</div>` : ""}
+      <div class="manage-section">
+        ${remaining > 0 ? `<button class="primary withdraw-btn" type="button">withdraw ${fmt(remaining, 4)}</button>` : ""}
+        ${keyFor(c.id) ? `<button class="ghost remove-btn" type="button">remove from this browser</button>` : ""}
+      </div>`;
+    return;
+  }
+
+  const stats = (
+    await api(`/v1/campaigns/${c.id}/stats`, { headers: manageHeaders(c.id) })
+  ).body;
+  if (managedId !== c.id) return; // dialog moved on while stats loaded
+  const pct = c.budget_micro ? Math.min(100, (c.spent_micro / c.budget_micro) * 100) : 0;
+  const minRaise = ((c.bid_per_block_micro + (info?.adUnit.minBidIncrementUsd ?? 0.5) * USD) / USD).toFixed(2);
+  $("#manage-body").innerHTML = `
+    <div class="dialog-head">
+      <h3>manage campaign</h3>
+      <button class="icon-btn" type="button" data-close aria-label="close">✕</button>
+    </div>
+    <p class="manage-msg">${esc(c.message)}</p>
+    <p class="meta">${statusBadge(c)} · ${esc(c.id)}</p>
+    ${
+      needsFunding(c)
+        ? `<div class="notice notice-unfunded"><b>⚠ not funded</b> — ${unfundedReason(c)}. this campaign is off the board and not serving. fund at least 1 block below to go live${c.status === "paused" ? " (then resume it)" : ""}.</div>`
+        : ""
+    }
+    <div class="stat-grid">
+      <div class="stat"><span>bid / block</span><b>${fmt(c.bid_per_block_micro)}</b></div>
+      <div class="stat"><span>budget</span><b>${fmt(c.budget_micro)}</b></div>
+      <div class="stat"><span>spent</span><b>${fmt(c.spent_micro, 4)}</b></div>
+      <div class="stat"><span>impressions</span><b>${stats.impressions}</b></div>
+      <div class="stat"><span>clicks</span><b>${stats.clicks}</b></div>
+      <div class="stat"><span>publishers</span><b>${stats.publishers}</b></div>
+    </div>
+    <div class="budgetbar"><div style="width:${pct}%"></div></div>
+    <div class="manage-section fund-section">
+      <h4>fund budget</h4>
+      <div class="control-row">
+        <div class="field"><label for="manage-blocks">blocks</label><input id="manage-blocks" name="blocks" type="number" min="1" value="1" class="blocks-input" inputmode="numeric" autocomplete="off" /></div>
+        <button class="primary fund-btn" type="button">fund <span class="fund-cost">${fmt(c.bid_per_block_micro)}</span> via 402</button>
+      </div>
+      <p class="hint">1 block = 1,000 impressions at your current bid</p>
+    </div>
+    <div class="manage-section">
+      <h4>raise bid</h4>
+      <div class="control-row">
+        <div class="field"><label for="manage-bid">new bid $ / block</label><input id="manage-bid" name="newBid" type="number" step="0.5" class="bid-input" value="${minRaise}" inputmode="decimal" autocomplete="off" /></div>
+        <button class="ghost raise-btn" type="button">raise bid</button>
+      </div>
+    </div>
+    <div class="manage-section danger-zone">
+      <button class="ghost pause-btn" type="button">${c.status === "paused" ? "▶ resume" : "⏸ pause"}</button>
+      <button class="ghost danger cancel-btn" type="button">cancel campaign${remaining > 0 ? ` + withdraw ${fmt(remaining, 4)}` : ""}</button>
+    </div>`;
+}
+
+// Live cost estimate next to the fund button (price is bid × blocks).
+$("#manage-body").addEventListener("input", (e) => {
+  if (!e.target.classList.contains("blocks-input")) return;
+  const c = mine.find((m) => m.id === managedId);
+  const cost = $("#manage-body .fund-cost");
+  if (c && cost) cost.textContent = fmt(c.bid_per_block_micro * Math.max(1, Number(e.target.value) || 1));
+});
+
+$("#manage-body").addEventListener("click", async (e) => {
+  const id = managedId;
+  if (!id) return;
+  if (e.target.closest(".fund-btn")) {
+    await fund(id, Number($("#manage-body .blocks-input").value));
+  } else if (e.target.closest(".raise-btn")) {
     try {
       await api(`/v1/campaigns/${id}/bid`, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-manage-key": keyFor(id) },
-        body: JSON.stringify({ bidPerBlockUsd: Number(card.querySelector(".bid-input").value) }),
+        headers: manageHeaders(id, { "content-type": "application/json" }),
+        body: JSON.stringify({ bidPerBlockUsd: Number($("#manage-body .bid-input").value) }),
       });
       toast("bid raised");
       await refreshAll();
     } catch (err) {
       toast(`raise failed: ${err.message}`, "err");
     }
-  } else if (e.target.classList.contains("pause-btn")) {
+  } else if (e.target.closest(".pause-btn")) {
     try {
       const c = mine.find((m) => m.id === id);
       const action = c?.status === "paused" ? "resume" : "pause";
       await api(`/v1/campaigns/${id}/${action}`, {
         method: "POST",
-        headers: { "x-manage-key": keyFor(id) },
+        headers: manageHeaders(id),
       });
       toast(`campaign ${action}d`);
       await refreshAll();
     } catch (err) {
       toast(`pause failed: ${err.message}`, "err");
     }
+  } else if (e.target.closest(".cancel-btn")) {
+    await cancelCampaign(id);
+  } else if (e.target.closest(".withdraw-btn")) {
+    await withdrawCampaign(id);
+  } else if (e.target.closest(".remove-btn")) {
+    if (confirm("Forget this campaign's manage key? You will no longer see it (or its refunds) in this browser.")) {
+      dropManageKey(id);
+      manageDialog.close();
+      toast("campaign removed from this browser");
+      await refreshAll();
+    }
   }
 });
+
+// ---- cancel & withdraw ----
+
+// Where the unspent budget goes back to: the signed-in wallet. The server
+// falls back to the campaign's own wallet, so signed-in owners can omit it —
+// legacy manage-key campaigns must sign in to receive a refund.
+function refundDestination(remaining) {
+  if (remaining <= 0) return undefined;
+  if (!session) {
+    toast("sign in with your wallet to receive the unspent budget", "err");
+    return null;
+  }
+  return session.wallet;
+}
+
+async function cancelCampaign(id) {
+  const c = mine.find((m) => m.id === id);
+  if (!c) return;
+  const remaining = remainingOf(c);
+  const to = refundDestination(remaining);
+  if (to === null) return;
+  const note =
+    remaining > 0
+      ? `The remaining ${fmt(remaining, 4)} will be withdrawn to ${to}.`
+      : "It has no unspent budget.";
+  if (!confirm(`Cancel this campaign for good? It stops serving immediately and cannot be resumed. ${note}`)) return;
+  try {
+    const { body } = await api(`/v1/campaigns/${id}/cancel`, {
+      method: "POST",
+      headers: manageHeaders(id, { "content-type": "application/json" }),
+      body: JSON.stringify(to ? { refundTo: to } : {}),
+    });
+    const r = body.refund;
+    toast(
+      r
+        ? `✓ campaign cancelled — ${fmt(r.amount_micro)} refund ${r.status}${r.tx ? ` (tx ${r.tx.slice(0, 10)}…)` : ""}`
+        : "✓ campaign cancelled",
+    );
+    await refreshAll();
+  } catch (err) {
+    toast(`cancel failed: ${err.message}`, "err");
+  }
+}
+
+async function withdrawCampaign(id) {
+  const c = mine.find((m) => m.id === id);
+  if (!c) return;
+  const remaining = remainingOf(c);
+  const to = refundDestination(remaining);
+  if (!to) return;
+  try {
+    const { body } = await api(`/v1/campaigns/${id}/withdraw`, {
+      method: "POST",
+      headers: manageHeaders(id, { "content-type": "application/json" }),
+      body: JSON.stringify({ refundTo: to }),
+    });
+    const p = body.payout;
+    toast(`✓ withdrawal of ${fmt(p.amount_micro)} ${p.status}${p.tx ? ` (tx ${p.tx.slice(0, 10)}…)` : ""}`);
+    await refreshAll();
+  } catch (err) {
+    toast(`withdraw failed: ${err.message}`, "err");
+  }
+}
 
 // ---- funding through the 402 ----
 
@@ -224,61 +644,98 @@ async function fund(id, blocks) {
   const mock = info?.paymentRails.primary.mode === "mock";
   try {
     // First request carries no payment: surface the 402 like any x402 client.
-    const first = await api(url, { method: "POST" });
+    const first = await fetch(url, { method: "POST" });
+    const firstBody = await first.json().catch(() => null);
     if (first.status !== 402) {
-      toast(`funded ${first.body.funded ?? ""}`);
+      if (!first.ok) return toast(`funding failed: ${firstBody?.error ?? first.status}`, "err");
+      toast(`funded ${firstBody?.funded ?? ""}`);
       return refreshAll();
     }
     if (mock) {
       // The mock rail settles via header — same retry-with-payment control flow.
-      const paid = await api(url, { method: "POST", headers: { "x-mock-payment": wallet() } });
+      const paid = await api(url, {
+        method: "POST",
+        headers: { "x-mock-payment": session?.wallet ?? "anon" },
+      });
       if (paid.status === 201) {
         toast(`✓ funded ${paid.body.funded} (payment ${paid.body.payment.id})`);
         return refreshAll();
       }
       return toast(`funding failed: ${JSON.stringify(paid.body)}`, "err");
     }
-    // Real x402 rail: show the challenge and how to pay it programmatically.
-    const accept = first.body.accepts?.[0] ?? first.body;
-    $("#pay-summary").textContent = `This marketplace wants ${accept.amount ?? "?"} (micro)USDC on ${accept.network ?? "?"} to fund ${blocks} block(s).`;
-    $("#pay-challenge").textContent = JSON.stringify(first.body, null, 2);
-    $("#pay-snippet").textContent = [
-      `import { wrapFetchWithPaymentFromConfig } from "@x402/fetch";`,
-      `import { ExactEvmScheme } from "@x402/evm/exact/client";`,
-      `import { privateKeyToAccount } from "viem/accounts";`,
-      ``,
-      `const pay = wrapFetchWithPaymentFromConfig(fetch, { schemes: [{`,
-      `  network: "${accept.network ?? "eip155:8453"}",`,
-      `  client: new ExactEvmScheme(privateKeyToAccount(PRIVATE_KEY)) }] });`,
-      `await pay("${location.origin}${url}", { method: "POST" });`,
-    ].join("\n");
-    $("#pay-dialog").showModal();
+    // Real x402 rail. v2 servers put the challenge in the PAYMENT-REQUIRED
+    // header (the JSON body is empty); fall back to the body for older rails.
+    const paymentRequired = parsePaymentRequired(
+      first.headers.get("PAYMENT-REQUIRED"),
+      firstBody,
+    );
+    if (!eth()) return showPayFallback(paymentRequired, url, blocks);
+
+    // Pay right here: sign the EIP-3009 transfer authorization with the
+    // connected wallet (gasless — the facilitator submits it on-chain).
+    const account = await signingAccount();
+    if (!account) return;
+    const { header, accept } = await createPaymentSignatureHeader({
+      paymentRequired,
+      from: account,
+      signTypedData: (typedData) =>
+        eth().request({
+          method: "eth_signTypedData_v4",
+          params: [account, JSON.stringify(typedData)],
+        }),
+    });
+    toast(`payment signed — settling ${fmt(Number(accept.amount))} USDC on-chain…`);
+    const paid = await fetch(url, { method: "POST", headers: { "PAYMENT-SIGNATURE": header } });
+    const paidBody = await paid.json().catch(() => null);
+    if (!paid.ok) {
+      return toast(`settlement failed: ${paidBody?.error ?? paid.status}`, "err");
+    }
+    const settle = parsePaymentResponse(paid.headers.get("PAYMENT-RESPONSE"));
+    const tx = settle?.transaction ? ` — tx ${settle.transaction.slice(0, 10)}…` : "";
+    toast(`✓ funded ${paidBody?.funded ?? ""}${tx}`);
+    return refreshAll();
   } catch (err) {
     toast(`funding failed: ${err.message}`, "err");
   }
+}
+
+// No injected wallet: show the challenge and how to pay it programmatically.
+function showPayFallback(paymentRequired, url, blocks) {
+  const accept = paymentRequired.accepts?.[0] ?? {};
+  $("#pay-summary").textContent = `This marketplace wants ${accept.amount ?? "?"} (micro)USDC on ${accept.network ?? "?"} to fund ${blocks} block(s).`;
+  $("#pay-challenge").textContent = JSON.stringify(paymentRequired, null, 2);
+  $("#pay-snippet").textContent = [
+    `import { wrapFetchWithPaymentFromConfig } from "@x402/fetch";`,
+    `import { ExactEvmScheme } from "@x402/evm/exact/client";`,
+    `import { privateKeyToAccount } from "viem/accounts";`,
+    ``,
+    `const pay = wrapFetchWithPaymentFromConfig(fetch, { schemes: [{`,
+    `  network: "${accept.network ?? "eip155:8453"}",`,
+    `  client: new ExactEvmScheme(privateKeyToAccount(PRIVATE_KEY)) }] });`,
+    `await pay("${location.origin}${url}", { method: "POST" });`,
+  ].join("\n");
+  $("#pay-dialog").showModal();
 }
 
 $("#pay-close").addEventListener("click", () => $("#pay-dialog").close());
 
 // ---- boot ----
 
-$("#wallet").value = localStorage.getItem("cv_wallet") ?? "";
-$("#adv-label").value = localStorage.getItem("cv_label") ?? "";
-$("#wallet").addEventListener("input", () => {
-  localStorage.setItem("cv_wallet", wallet());
-  refreshAll().catch(() => {});
-});
-$("#adv-label").addEventListener("input", () => {
-  localStorage.setItem("cv_label", advLabel());
-});
-
 async function refreshAll() {
   await loadMine(); // first: the board marks "(you)" rows by my campaign ids
   await refreshBoard();
-  await renderMine();
+  renderMine();
+  // Keep an open manage dialog live, but never clobber a field mid-edit
+  // (focused buttons are fine to replace — only typing must be preserved).
+  const active = document.activeElement;
+  const editing = active?.tagName === "INPUT" && $("#manage-body").contains(active);
+  if (managedId && !editing) {
+    await renderManage();
+  }
 }
 
-loadInfo()
+loadSession()
+  .then(loadInfo)
   .then(refreshAll)
   .catch((err) => toast(`marketplace unreachable: ${err.message}`, "err"));
 setInterval(() => refreshAll().catch(() => {}), 3000);

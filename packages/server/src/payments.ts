@@ -45,6 +45,9 @@ export function fundingPriceMicro(
   }
   const c = market.getCampaign(campaignId);
   if (!c) throw badRequest(`campaign ${campaignId} not found`);
+  if (c.status === "cancelled") {
+    throw badRequest(`campaign ${campaignId} is cancelled and no longer accepts funding`);
+  }
   return c.bid_per_block_micro * blocks;
 }
 

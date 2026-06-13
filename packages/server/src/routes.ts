@@ -4,8 +4,9 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { nanoid } from "nanoid";
 import { z } from "zod";
+import { AdvertiserAuth, SESSION_COOKIE, SESSION_TTL_MS } from "./auth.js";
 import { isEvmAddress, USD, usdToMicro, type Config } from "./config.js";
-import type { Campaign, Payout } from "./db.js";
+import type { Advertiser, Campaign, Payout } from "./db.js";
 import { MarketError, type Marketplace } from "./marketplace.js";
 import { buildFundingPaywall, describePrice, fundingPriceMicro } from "./payments.js";
 import { executePayout, retryPayout } from "./payouts.js";
@@ -21,14 +22,35 @@ const Event = z.object({
   type: z.enum(["impression", "click"]),
 });
 
-/** Public view of a campaign: wallet and credential hash never leave the server. */
-function publicCampaign({ advertiser: _wallet, manage_key_hash: _hash, ...c }: Campaign) {
+/** Public view of a campaign: wallets and credential hash never leave the server. */
+function publicCampaign({ advertiser: _wallet, manage_key_hash: _hash, owner_wallet: _owner, ...c }: Campaign) {
   return { ...c, advertiser: c.label ?? "anonymous" };
 }
 
 /** Owner view: everything but the credential hash. */
 function ownCampaign({ manage_key_hash: _hash, ...c }: Campaign) {
   return c;
+}
+
+/** What the webapp knows about a signed-in account. */
+function accountView(adv: Advertiser) {
+  return {
+    signedIn: true,
+    wallet: adv.wallet,
+    label: adv.label,
+    settingsSet: adv.settings_at !== null,
+  };
+}
+
+function cookieValue(req: Request, name: string): string | undefined {
+  const raw = req.headers.cookie;
+  if (!raw) return undefined;
+  for (const part of raw.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return undefined;
 }
 
 function clientIp(req: Request): string {
@@ -40,6 +62,12 @@ function constantTimeEq(a: string, b: string): boolean {
   const bb = Buffer.from(b, "utf8");
   return ab.length === bb.length && timingSafeEqual(ab, bb);
 }
+
+/** Express 4 doesn't route async rejections to the error middleware itself. */
+const asyncRoute =
+  (fn: (req: Request, res: Response) => Promise<void>) =>
+  (req: Request, res: Response, next: express.NextFunction) =>
+    fn(req, res).catch(next);
 
 function manageKeyFrom(req: Request): string | undefined {
   const header = req.header("x-manage-key");
@@ -88,9 +116,20 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     return !!given && constantTimeEq(given, cfg.adminToken);
   };
 
-  /** Manage-key (campaign owner) or admin-token gate for campaign mutations. */
-  const canManage = (req: Request, campaignId: string): boolean =>
-    isAdmin(req) || market.verifyManageKey(campaignId, manageKeyFrom(req));
+  // SIWE sign-in: the chain id is informational in the message; auth itself is
+  // just an EIP-191 signature over a server-authored challenge.
+  const chainId = Number(cfg.network.split(":")[1]) || 1;
+  const auth = new AdvertiserAuth(market.db, chainId);
+  const sessionWallet = (req: Request): string | undefined =>
+    auth.sessionWallet(cookieValue(req, SESSION_COOKIE));
+
+  /** Campaign-owner gate: manage key, signed-in owner wallet, or admin token. */
+  const canManage = (req: Request, campaignId: string): boolean => {
+    if (isAdmin(req)) return true;
+    if (market.verifyManageKey(campaignId, manageKeyFrom(req))) return true;
+    const wallet = sessionWallet(req);
+    return !!wallet && market.getCampaign(campaignId)?.owner_wallet === wallet;
+  };
 
   // Campaign creative constraints. Landing URLs are https-only on the real
   // rail; the mock rail additionally allows localhost http for development.
@@ -108,7 +147,8 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     }
   };
   const CreateCampaign = z.object({
-    advertiser: z.string().min(1).max(64),
+    // Optional when a SIWE session identifies the creator's wallet.
+    advertiser: z.string().min(1).max(64).optional(),
     label: z.string().min(1).max(32).optional(),
     message: z.string().min(1).max(80),
     url: z
@@ -163,16 +203,123 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     });
   });
 
+  // ---- advertiser sign-in (SIWE) & account ----
+
+  // Brute-force / nonce-flood protection on the auth surface.
+  const authLimiter = new RateLimiter(2, 20);
+  const authAllowed = (req: Request, res: Response): boolean => {
+    if (authLimiter.allow(clientIp(req), Date.now())) return true;
+    res.status(429).json({ error: "rate limit exceeded" });
+    return false;
+  };
+
+  const sessionCookieOpts = (req: Request) =>
+    ({ httpOnly: true, sameSite: "lax", secure: req.secure, path: "/" }) as const;
+
+  // Step 1: the server authors the exact EIP-4361 message to sign. The
+  // challenge is bound to the address and expires in minutes.
+  app.get("/v1/auth/nonce", (req, res) => {
+    if (!authAllowed(req, res)) return;
+    const address = String(req.query.address ?? "");
+    if (!isEvmAddress(address)) {
+      return void res.status(400).json({ error: "address must be a 0x-prefixed EVM address" });
+    }
+    const domain = req.headers.host ?? "localhost";
+    res.json(auth.issueChallenge({ address, domain, uri: `${req.protocol}://${domain}` }));
+  });
+
+  // Step 2: redeem the signed challenge for a session cookie. The nonce is
+  // single-use whatever the outcome.
+  const VerifyBody = z.object({
+    nonce: z.string().min(8).max(128),
+    signature: z
+      .string()
+      .max(4096)
+      .regex(/^0x[0-9a-fA-F]+$/, "signature must be 0x-prefixed hex"),
+  });
+  app.post("/v1/auth/verify", asyncRoute(async (req, res) => {
+    if (!authAllowed(req, res)) return;
+    const body = VerifyBody.parse(req.body);
+    const wallet = await auth.verifyChallenge(body.nonce, body.signature);
+    if (!wallet) {
+      return void res.status(401).json({ error: "signature verification failed — request a fresh nonce and retry" });
+    }
+    const advertiser = auth.ensureAdvertiser(wallet);
+    const session = auth.createSession(wallet);
+    res.cookie(SESSION_COOKIE, session.token, {
+      ...sessionCookieOpts(req),
+      maxAge: SESSION_TTL_MS,
+    });
+    res.json(accountView(advertiser));
+  }));
+
+  app.get("/v1/auth/session", (req, res) => {
+    const wallet = sessionWallet(req);
+    if (!wallet) return void res.json({ signedIn: false });
+    res.json(accountView(auth.ensureAdvertiser(wallet)));
+  });
+
+  app.post("/v1/auth/logout", (req, res) => {
+    const token = cookieValue(req, SESSION_COOKIE);
+    if (token) auth.deleteSession(token);
+    res.clearCookie(SESSION_COOKIE, sessionCookieOpts(req));
+    res.json({ signedIn: false });
+  });
+
+  /** 401-or-wallet gate for the signed-in account surface. */
+  const requireSession = (req: Request, res: Response): string | undefined => {
+    const wallet = sessionWallet(req);
+    if (!wallet) res.status(401).json({ error: "sign in with your wallet first" });
+    return wallet;
+  };
+
+  // Account settings. The board name lives on the account and is applied to
+  // the account's campaigns; the signed-in wallet doubles as the refund
+  // destination, so no separate "advertiser wallet" setting exists.
+  const AccountBody = z.object({ label: z.string().trim().min(1).max(32) });
+  app.put("/v1/account", (req, res) => {
+    const wallet = requireSession(req, res);
+    if (!wallet) return;
+    const body = AccountBody.parse(req.body);
+    const advertiser = auth.saveSettings(wallet, body.label);
+    market.relabelOwnedCampaigns(wallet, body.label);
+    res.json(accountView(advertiser));
+  });
+
+  // The cross-browser "my campaigns" list: owner views (with refund trails)
+  // of every campaign this wallet created while signed in.
+  app.get("/v1/me/campaigns", (req, res) => {
+    const wallet = requireSession(req, res);
+    if (!wallet) return;
+    res.json({
+      campaigns: market.listCampaignsByOwner(wallet).map((c) => ({
+        ...ownCampaign(c),
+        refunds: market.listCampaignPayouts(c.id),
+      })),
+    });
+  });
+
   // ---- advertiser side ----
 
   app.post("/v1/campaigns", (req, res) => {
     const body = CreateCampaign.parse(req.body);
+    // Signed-in creators get the campaign bound to their wallet (manageable
+    // from any browser) and inherit the account's board name; bare API
+    // callers (agents) pass an advertiser wallet and keep the manage key.
+    const owner = sessionWallet(req);
+    const advertiser = body.advertiser ?? owner;
+    if (!advertiser) {
+      return void res.status(400).json({
+        error: "advertiser is required — sign in with your wallet or pass an advertiser address",
+      });
+    }
     const { manageKey, ...campaign } = market.createCampaign({
-      advertiser: body.advertiser,
-      label: body.label,
+      advertiser,
+      label: body.label ?? (owner ? auth.getAdvertiser(owner)?.label : undefined) ?? undefined,
       message: body.message,
       url: body.url,
       bidPerBlockMicro: usdToMicro(body.bidPerBlockUsd),
+      ownerWallet: owner ?? null,
     });
     res.status(201).json({
       campaign: ownCampaign(campaign),
@@ -187,8 +334,15 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
 
   // Listing is public and wallet-free. Campaign management and stats are
   // keyed by the per-campaign manage key, not by knowing a wallet address.
+  // Cancelled campaigns are removed from public surfaces; their owners can
+  // still fetch them by id to track the refund.
   app.get("/v1/campaigns", (_req, res) => {
-    res.json({ campaigns: market.listCampaigns().map(publicCampaign) });
+    res.json({
+      campaigns: market
+        .listCampaigns()
+        .filter((c) => c.status !== "cancelled")
+        .map(publicCampaign),
+    });
   });
 
   app.get("/v1/campaigns/:id/stats", (req, res) => {
@@ -201,7 +355,13 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
   app.get("/v1/campaigns/:id", (req, res) => {
     const c = market.getCampaign(req.params.id);
     if (!c) return void res.status(404).json({ error: "campaign not found" });
-    res.json(canManage(req, c.id) ? ownCampaign(c) : publicCampaign(c));
+    // The owner view carries the refund payout trail so a cancelled
+    // campaign's withdrawal can be tracked to its on-chain tx.
+    res.json(
+      canManage(req, c.id)
+        ? { ...ownCampaign(c), refunds: market.listCampaignPayouts(c.id) }
+        : publicCampaign(c),
+    );
   });
 
   app.post("/v1/campaigns/:id/bid", (req, res) => {
@@ -228,6 +388,68 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     }
     res.json({ campaign: ownCampaign(market.setCampaignStatus(req.params.id, "active")) });
   });
+
+  // Where a refund payout goes: the caller's explicit choice, falling back to
+  // the wallet given at creation, then to the SIWE owner wallet. An explicit
+  // refundTo must itself be valid — escrow is only ever returned in USDC,
+  // never re-routed silently.
+  const RefundBody = z.object({ refundTo: z.string().max(64).optional() }).default({});
+  const refundWallet = (c: Campaign, refundTo?: string): string | undefined => {
+    if (refundTo) return isEvmAddress(refundTo) ? refundTo : undefined;
+    return [c.advertiser, c.owner_wallet ?? ""].find(isEvmAddress);
+  };
+
+  // Cancel is terminal: the campaign leaves the board for good and any
+  // unspent escrow is withdrawn back to the advertiser in the same call.
+  app.post("/v1/campaigns/:id/cancel", asyncRoute(async (req, res) => {
+    if (!canManage(req, req.params.id)) {
+      return void res.status(403).json({ error: "manage key or admin token required" });
+    }
+    const body = RefundBody.parse(req.body ?? undefined);
+    const existing = market.getCampaign(req.params.id);
+    if (!existing) return void res.status(404).json({ error: "campaign not found" });
+
+    const remaining = market.remainingMicro(existing);
+    const to = remaining > 0 ? refundWallet(existing, body.refundTo) : undefined;
+    if (remaining > 0 && !to) {
+      return void res.status(400).json({
+        error:
+          "refundTo must be a 0x-prefixed EVM address to receive the unspent budget (the advertiser field is not a wallet)",
+      });
+    }
+
+    const campaign = market.cancelCampaign(existing.id);
+    let refund: (Payout & { error?: string }) | null = null;
+    if (remaining > 0 && to) {
+      const payout = market.requestRefund(campaign.id, to);
+      const result = await executePayout(cfg, market, payout.id, to, payout.amount_micro);
+      refund = { ...payout, status: result.status, tx: result.tx ?? payout.tx, error: result.error };
+    }
+    res.json({ campaign: ownCampaign(market.getCampaign(campaign.id)!), refund });
+  }));
+
+  // Withdraw what's left of a cancelled campaign's escrow — the retry path
+  // when the cancel-time refund failed terminally or was skipped.
+  app.post("/v1/campaigns/:id/withdraw", asyncRoute(async (req, res) => {
+    if (!canManage(req, req.params.id)) {
+      return void res.status(403).json({ error: "manage key or admin token required" });
+    }
+    const body = RefundBody.parse(req.body ?? undefined);
+    const c = market.getCampaign(req.params.id);
+    if (!c) return void res.status(404).json({ error: "campaign not found" });
+    const to = refundWallet(c, body.refundTo);
+    if (!to) {
+      return void res
+        .status(400)
+        .json({ error: "refundTo must be a 0x-prefixed EVM address" });
+    }
+    const payout = market.requestRefund(c.id, to);
+    const result = await executePayout(cfg, market, payout.id, to, payout.amount_micro);
+    res.status(201).json({
+      payout: { ...payout, ...result },
+      campaign: ownCampaign(market.getCampaign(c.id)!),
+    });
+  }));
 
   app.get("/v1/auction", (_req, res) => {
     res.json({ board: market.auctionState() });
@@ -378,7 +600,7 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     });
   });
 
-  app.post("/v1/publishers/:wallet/payouts", async (req, res) => {
+  app.post("/v1/publishers/:wallet/payouts", asyncRoute(async (req, res) => {
     const wallet = req.params.wallet;
     if (!isEvmAddress(wallet)) {
       return void res.status(400).json({ error: "wallet must be a 0x-prefixed EVM address" });
@@ -386,7 +608,7 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     const payout = market.requestPayout(wallet);
     const result = await executePayout(cfg, market, payout.id, wallet, payout.amount_micro);
     res.status(201).json({ payout: { ...payout, ...result } });
-  });
+  }));
 
   // ---- operator/admin (enabled only when ADMIN_TOKEN is set) ----
 
@@ -411,10 +633,10 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
 
   // Retry a queued payout (re-send) or reconcile a submitted one against its
   // recorded tx. Never re-sends a payout that has a tx hash.
-  app.post("/v1/admin/payouts/:id/retry", async (req, res) => {
+  app.post("/v1/admin/payouts/:id/retry", asyncRoute(async (req, res) => {
     if (!requireAdmin(req, res)) return;
     res.json({ result: await retryPayout(cfg, market, req.params.id) });
-  });
+  }));
 
   // Operator decision: give up on a payout and refund the publisher balance.
   // Refuse when a tx was broadcast and not yet proven reverted.

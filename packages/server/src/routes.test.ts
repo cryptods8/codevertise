@@ -335,3 +335,92 @@ describe("ops surface", () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe("campaign cancel & withdraw over HTTP", () => {
+  const REFUND = `0x${"d4".repeat(20)}`;
+
+  async function cancel(h: Harness, body?: unknown, key?: string) {
+    const res = await fetch(`${h.base}/v1/campaigns/${h.campaignId}/cancel`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(key ? { "x-manage-key": key } : {}),
+      },
+      body: JSON.stringify(body ?? {}),
+    });
+    return { status: res.status, body: await res.json() };
+  }
+
+  it("requires the manage key", async () => {
+    const h = await start();
+    expect((await cancel(h)).status).toBe(403);
+    expect((await cancel(h, {}, "cvk_wrong")).status).toBe(403);
+    expect(h.market.getCampaign(h.campaignId)!.status).toBe("active");
+  });
+
+  it("refuses to cancel when the unspent budget has nowhere to go", async () => {
+    const h = await start(); // advertiser "adv" is not an EVM address
+    const res = await cancel(h, {}, h.manageKey);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/refundTo/);
+    expect(h.market.getCampaign(h.campaignId)!.status).toBe("active");
+  });
+
+  it("cancels, queues the refund, and removes the campaign from every public surface", async () => {
+    const h = await start();
+    const res = await cancel(h, { refundTo: REFUND }, h.manageKey);
+    expect(res.status).toBe(200);
+    expect(res.body.campaign.status).toBe("cancelled");
+    expect(res.body.refund.kind).toBe("refund");
+    expect(res.body.refund.amount_micro).toBe(100 * USD);
+    expect(res.body.refund.status).toBe("queued"); // no treasury key configured
+
+    // Off the public list, off the auction board, nothing serves.
+    const list = await (await fetch(`${h.base}/v1/campaigns`)).json();
+    expect(list.campaigns).toHaveLength(0);
+    const auction = await (await fetch(`${h.base}/v1/auction`)).json();
+    expect(auction.board).toHaveLength(0);
+    expect((await serve(h)).status).toBe(204);
+
+    // Funding a cancelled campaign is refused even with a valid mock payment.
+    const fund = await fetch(`${h.base}/v1/fund?campaign=${h.campaignId}&blocks=1`, {
+      method: "POST",
+      headers: { "x-mock-payment": REFUND },
+    });
+    expect(fund.status).toBe(400);
+
+    // The owner can still see the campaign and its refund trail by id.
+    const own = await (
+      await fetch(`${h.base}/v1/campaigns/${h.campaignId}`, {
+        headers: { "x-manage-key": h.manageKey },
+      })
+    ).json();
+    expect(own.status).toBe("cancelled");
+    expect(own.refunds).toHaveLength(1);
+    expect(own.refunds[0].amount_micro).toBe(100 * USD);
+  });
+
+  it("withdraw re-runs a refund that failed terminally", async () => {
+    const h = await start();
+    const first = await cancel(h, { refundTo: REFUND }, h.manageKey);
+    h.market.resolvePayout(first.body.refund.id, "failed");
+
+    const res = await fetch(`${h.base}/v1/campaigns/${h.campaignId}/withdraw`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-manage-key": h.manageKey },
+      body: JSON.stringify({ refundTo: REFUND }),
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.payout.amount_micro).toBe(100 * USD);
+    expect(h.market.remainingMicro(h.market.getCampaign(h.campaignId)!)).toBe(0);
+
+    // Nothing left: a second withdraw is refused.
+    const empty = await fetch(`${h.base}/v1/campaigns/${h.campaignId}/withdraw`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-manage-key": h.manageKey },
+      body: JSON.stringify({ refundTo: REFUND }),
+    });
+    expect(empty.status).toBe(400);
+  });
+});

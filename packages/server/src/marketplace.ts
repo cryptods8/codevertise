@@ -19,7 +19,7 @@ export class Marketplace {
   private secret?: Buffer;
 
   constructor(
-    private db: Database.Database,
+    readonly db: Database.Database,
     private cfg: Config,
   ) {}
 
@@ -41,6 +41,8 @@ export class Marketplace {
     message: string;
     url: string;
     bidPerBlockMicro: number;
+    /** Lowercase SIWE wallet of the signed-in creator, when there is one. */
+    ownerWallet?: string | null;
   }): Campaign & { manageKey: string } {
     if (input.bidPerBlockMicro < this.cfg.minBidMicro) {
       throw new MarketError(
@@ -68,14 +70,16 @@ export class Marketplace {
       bid_per_block_micro: input.bidPerBlockMicro,
       budget_micro: 0,
       spent_micro: 0,
+      refunded_micro: 0,
       status: "active",
       created_at: Date.now(),
       manage_key_hash: sha256Hex(manageKey),
+      owner_wallet: input.ownerWallet ?? null,
     };
     this.db
       .prepare(
-        `INSERT INTO campaigns (id, advertiser, label, message, url, bid_per_block_micro, budget_micro, spent_micro, status, created_at, manage_key_hash)
-         VALUES (@id, @advertiser, @label, @message, @url, @bid_per_block_micro, @budget_micro, @spent_micro, @status, @created_at, @manage_key_hash)`,
+        `INSERT INTO campaigns (id, advertiser, label, message, url, bid_per_block_micro, budget_micro, spent_micro, refunded_micro, status, created_at, manage_key_hash, owner_wallet)
+         VALUES (@id, @advertiser, @label, @message, @url, @bid_per_block_micro, @budget_micro, @spent_micro, @refunded_micro, @status, @created_at, @manage_key_hash, @owner_wallet)`,
       )
       .run(campaign);
     return Object.assign(campaign, { manageKey });
@@ -92,8 +96,25 @@ export class Marketplace {
   }
 
   setCampaignStatus(id: string, status: "active" | "paused"): Campaign {
-    this.mustGetCampaign(id);
+    const c = this.mustGetCampaign(id);
+    if (c.status === "cancelled") {
+      throw new MarketError(`campaign ${id} is cancelled and cannot be ${status}`, 409);
+    }
     this.db.prepare(`UPDATE campaigns SET status = ? WHERE id = ?`).run(status, id);
+    return this.mustGetCampaign(id);
+  }
+
+  /**
+   * Cancel a campaign: terminal — it leaves the auction board immediately and
+   * can never serve, be resumed, or accept funding again. The unspent escrow
+   * stays withdrawable via requestRefund.
+   */
+  cancelCampaign(id: string): Campaign {
+    const c = this.mustGetCampaign(id);
+    if (c.status === "cancelled") {
+      throw new MarketError(`campaign ${id} is already cancelled`, 409);
+    }
+    this.db.prepare(`UPDATE campaigns SET status = 'cancelled' WHERE id = ?`).run(id);
     return this.mustGetCampaign(id);
   }
 
@@ -112,6 +133,21 @@ export class Marketplace {
     return this.db
       .prepare(`SELECT * FROM campaigns ORDER BY created_at DESC`)
       .all() as Campaign[];
+  }
+
+  /** Every campaign a signed-in wallet created — the cross-browser "mine" list. */
+  listCampaignsByOwner(ownerWallet: string): Campaign[] {
+    return this.db
+      .prepare(`SELECT * FROM campaigns WHERE owner_wallet = ? ORDER BY created_at DESC`)
+      .all(ownerWallet) as Campaign[];
+  }
+
+  /** The board name is an account-level setting: saving it renames the
+   *  account's campaigns too, so the public board stays coherent. */
+  relabelOwnedCampaigns(ownerWallet: string, label: string | null): void {
+    this.db
+      .prepare(`UPDATE campaigns SET label = ? WHERE owner_wallet = ?`)
+      .run(label, ownerWallet);
   }
 
   campaignStats(id: string) {
@@ -141,6 +177,9 @@ export class Marketplace {
   /** English ascending auction: a raise must beat your own bid by the minimum increment. */
   raiseBid(id: string, newBidMicro: number): Campaign {
     const c = this.mustGetCampaign(id);
+    if (c.status === "cancelled") {
+      throw new MarketError(`campaign ${id} is cancelled`, 409);
+    }
     if (newBidMicro < c.bid_per_block_micro + this.cfg.minBidIncrementMicro) {
       throw new MarketError(
         `new bid must be >= current bid + ${this.cfg.minBidIncrementMicro} micro-USD`,
@@ -162,6 +201,9 @@ export class Marketplace {
     tx?: string;
   }): { campaign: Campaign; payment: Payment } {
     const c = this.mustGetCampaign(input.campaignId);
+    if (c.status === "cancelled") {
+      throw new MarketError(`campaign ${c.id} is cancelled and no longer accepts funding`, 409);
+    }
     if (input.amountMicro <= 0) throw new MarketError("amount must be positive", 400);
     const payment: Payment = {
       id: `pay_${nanoid(12)}`,
@@ -195,7 +237,7 @@ export class Marketplace {
   }
 
   remainingMicro(c: Campaign): number {
-    return c.budget_micro - c.spent_micro;
+    return c.budget_micro - c.spent_micro - c.refunded_micro;
   }
 
   /**
@@ -333,12 +375,14 @@ export class Marketplace {
       wallet,
       amount_micro: balance,
       status: "queued",
+      kind: "earnings",
+      campaign_id: null,
       tx: null,
       created_at: Date.now(),
     };
     const insert = this.db.prepare(
-      `INSERT INTO payouts (id, wallet, amount_micro, status, tx, created_at)
-       VALUES (@id, @wallet, @amount_micro, @status, @tx, @created_at)`,
+      `INSERT INTO payouts (id, wallet, amount_micro, status, kind, campaign_id, tx, created_at)
+       VALUES (@id, @wallet, @amount_micro, @status, @kind, @campaign_id, @tx, @created_at)`,
     );
     const markPaid = this.db.prepare(
       `UPDATE publishers SET paid_micro = paid_micro + ? WHERE wallet = ?`,
@@ -348,6 +392,52 @@ export class Marketplace {
       markPaid.run(balance, wallet);
     })();
     return payout;
+  }
+
+  /**
+   * Withdraw a cancelled campaign's unspent escrow as a refund payout. Debits
+   * the escrow (refunded_micro) the moment the payout row is created — the
+   * same debit-first discipline as publisher payouts, so a crash mid-send can
+   * never refund twice. No minimum: it's the advertiser's money.
+   */
+  requestRefund(campaignId: string, toWallet: string): Payout {
+    const c = this.mustGetCampaign(campaignId);
+    if (c.status !== "cancelled") {
+      throw new MarketError("cancel the campaign before withdrawing its escrow", 409);
+    }
+    const remaining = this.remainingMicro(c);
+    if (remaining <= 0) {
+      throw new MarketError("no unspent budget to withdraw", 400);
+    }
+    const payout: Payout = {
+      id: `out_${nanoid(12)}`,
+      wallet: toWallet,
+      amount_micro: remaining,
+      status: "queued",
+      kind: "refund",
+      campaign_id: c.id,
+      tx: null,
+      created_at: Date.now(),
+    };
+    const insert = this.db.prepare(
+      `INSERT INTO payouts (id, wallet, amount_micro, status, kind, campaign_id, tx, created_at)
+       VALUES (@id, @wallet, @amount_micro, @status, @kind, @campaign_id, @tx, @created_at)`,
+    );
+    const debit = this.db.prepare(
+      `UPDATE campaigns SET refunded_micro = refunded_micro + ? WHERE id = ?`,
+    );
+    this.db.transaction(() => {
+      insert.run(payout);
+      debit.run(remaining, c.id);
+    })();
+    return payout;
+  }
+
+  /** Refund payouts issued for a campaign — the owner's withdrawal history. */
+  listCampaignPayouts(campaignId: string): Payout[] {
+    return this.db
+      .prepare(`SELECT * FROM payouts WHERE campaign_id = ? ORDER BY created_at DESC`)
+      .all(campaignId) as Payout[];
   }
 
   getPayout(id: string): Payout | undefined {
@@ -364,8 +454,10 @@ export class Marketplace {
   }
 
   /**
-   * Terminal transition. "sent" confirms the receipt; "failed" refunds the
-   * debit to the publisher's withdrawable pool. Already-terminal payouts
+   * Terminal transition. "sent" confirms the receipt; "failed" returns the
+   * debit to where it came from — the publisher's withdrawable pool for
+   * earnings, the campaign's escrow for refunds (so the advertiser can
+   * withdraw again, e.g. to a corrected wallet). Already-terminal payouts
    * cannot transition again — that's what makes a refund single-shot.
    */
   resolvePayout(id: string, status: "sent" | "failed", tx?: string): void {
@@ -374,12 +466,18 @@ export class Marketplace {
       throw new MarketError(`payout ${id} already resolved as ${payout.status}`, 409);
     }
     const update = this.db.prepare(`UPDATE payouts SET status = ?, tx = ? WHERE id = ?`);
-    const refund = this.db.prepare(
+    const refundEarnings = this.db.prepare(
       `UPDATE publishers SET paid_micro = paid_micro - ? WHERE wallet = ?`,
+    );
+    const refundEscrow = this.db.prepare(
+      `UPDATE campaigns SET refunded_micro = refunded_micro - ? WHERE id = ?`,
     );
     this.db.transaction(() => {
       update.run(status, tx ?? payout.tx, id);
-      if (status === "failed") refund.run(payout.amount_micro, payout.wallet);
+      if (status === "failed") {
+        if (payout.kind === "refund") refundEscrow.run(payout.amount_micro, payout.campaign_id);
+        else refundEarnings.run(payout.amount_micro, payout.wallet);
+      }
     })();
   }
 

@@ -267,3 +267,62 @@ describe("payouts", () => {
     expect(m.listPayouts("0xpub")[0].status).toBe("failed");
   });
 });
+
+describe("campaign cancel & escrow withdrawal", () => {
+  let m: Marketplace;
+  beforeEach(() => (m = makeMarket()));
+
+  const REFUND_WALLET = `0x${"d4".repeat(20)}`;
+
+  it("cancel is terminal: off the board, no serving, resuming, raising, or funding", () => {
+    const c = fundedCampaign(m, 2, 10);
+    m.cancelCampaign(c.id);
+    expect(m.getCampaign(c.id)!.status).toBe("cancelled");
+    expect(m.winner()).toBeUndefined();
+    expect(m.auctionState()).toHaveLength(0);
+    expect(() => m.setCampaignStatus(c.id, "active")).toThrow(/cancelled/);
+    expect(() => m.setCampaignStatus(c.id, "paused")).toThrow(/cancelled/);
+    expect(() => m.raiseBid(c.id, 5 * USD)).toThrow(/cancelled/);
+    expect(() =>
+      m.fundCampaign({ campaignId: c.id, payer: "x", amountMicro: USD, rail: "mock" }),
+    ).toThrow(/cancelled/);
+    expect(() => m.cancelCampaign(c.id)).toThrow(/already cancelled/);
+  });
+
+  it("withdraws exactly the unspent budget, once, and only after cancelling", () => {
+    const c = fundedCampaign(m, 2, 10);
+    m.recordEvent({ key: "k1", type: "impression", campaignId: c.id, publisher: "0xpub", surface: "s" }); // spends 2000
+    expect(() => m.requestRefund(c.id, REFUND_WALLET)).toThrow(/cancel/);
+
+    m.cancelCampaign(c.id);
+    const payout = m.requestRefund(c.id, REFUND_WALLET);
+    expect(payout.kind).toBe("refund");
+    expect(payout.campaign_id).toBe(c.id);
+    expect(payout.wallet).toBe(REFUND_WALLET);
+    expect(payout.amount_micro).toBe(10 * USD - 2000);
+
+    // Escrow is debited the moment the payout row exists — nothing to double-withdraw.
+    expect(m.remainingMicro(m.getCampaign(c.id)!)).toBe(0);
+    expect(() => m.requestRefund(c.id, REFUND_WALLET)).toThrow(/no unspent/);
+    // …and a drained campaign can no longer bill events.
+    expect(
+      m.recordEvent({ key: "k2", type: "impression", campaignId: c.id, publisher: "0xpub", surface: "s" }),
+    ).toBeUndefined();
+  });
+
+  it("a terminally failed refund returns the escrow for another attempt — once", () => {
+    const c = fundedCampaign(m, 2, 10);
+    m.cancelCampaign(c.id);
+    const first = m.requestRefund(c.id, REFUND_WALLET);
+    m.resolvePayout(first.id, "failed");
+    expect(m.remainingMicro(m.getCampaign(c.id)!)).toBe(10 * USD);
+    // The failure went back to campaign escrow, not to any publisher balance.
+    expect(m.balanceMicro(REFUND_WALLET)).toBe(0);
+
+    const second = m.requestRefund(c.id, REFUND_WALLET);
+    m.resolvePayout(second.id, "sent", "0xtx");
+    expect(m.remainingMicro(m.getCampaign(c.id)!)).toBe(0);
+    expect(() => m.resolvePayout(second.id, "failed")).toThrow(/already resolved/);
+    expect(m.listCampaignPayouts(c.id).map((p) => p.status).sort()).toEqual(["failed", "sent"]);
+  });
+});

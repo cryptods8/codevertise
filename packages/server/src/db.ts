@@ -10,11 +10,36 @@ export interface Campaign {
   bid_per_block_micro: number;
   budget_micro: number;
   spent_micro: number;
-  status: "active" | "paused";
+  /** Unspent budget returned to the advertiser via refund payouts. */
+  refunded_micro: number;
+  /** cancelled is terminal: the campaign never serves or accepts funds again. */
+  status: "active" | "paused" | "cancelled";
   created_at: number;
   /** sha256 of the campaign's manage key (issued once at creation); null for
    *  house/legacy campaigns, which then cannot be managed over HTTP at all. */
   manage_key_hash: string | null;
+  /** Lowercase wallet of the SIWE-signed-in creator; null for campaigns
+   *  created over the bare API (agents) — those manage via key only. */
+  owner_wallet: string | null;
+}
+
+/** An advertiser account, keyed by the SIWE-verified wallet (lowercase). */
+export interface Advertiser {
+  wallet: string;
+  /** Public board name, applied to the account's campaigns. */
+  label: string | null;
+  created_at: number;
+  /** When account settings were last saved; null until the forced first-run
+   *  settings pass completes. */
+  settings_at: number | null;
+}
+
+export interface Session {
+  /** sha256 of the bearer session token — the token itself is never stored. */
+  token_hash: string;
+  wallet: string;
+  created_at: number;
+  expires_at: number;
 }
 
 export interface AdEvent {
@@ -53,9 +78,14 @@ export interface Payout {
    * submitted — transaction broadcast, receipt unknown (NEVER auto-refund;
    *             reconcile against the chain before resolving)
    * sent      — receipt confirmed success
-   * failed    — terminally failed; the debit was refunded to the publisher
+   * failed    — terminally failed; the debit was returned to its source
+   *             (publisher balance for earnings, campaign escrow for refunds)
    */
   status: "queued" | "submitted" | "sent" | "failed";
+  /** earnings — publisher withdrawal; refund — unspent escrow back to an advertiser. */
+  kind: "earnings" | "refund";
+  /** Set on refund payouts: the cancelled campaign the escrow came from. */
+  campaign_id: string | null;
   tx: string | null;
   created_at: number;
 }
@@ -73,9 +103,23 @@ export function openDb(path: string): Database.Database {
       bid_per_block_micro INTEGER NOT NULL,
       budget_micro INTEGER NOT NULL DEFAULT 0,
       spent_micro INTEGER NOT NULL DEFAULT 0,
+      refunded_micro INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'active',
       created_at INTEGER NOT NULL,
-      manage_key_hash TEXT
+      manage_key_hash TEXT,
+      owner_wallet TEXT
+    );
+    CREATE TABLE IF NOT EXISTS advertisers (
+      wallet TEXT PRIMARY KEY,
+      label TEXT,
+      created_at INTEGER NOT NULL,
+      settings_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+      token_hash TEXT PRIMARY KEY,
+      wallet TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS events (
       key TEXT PRIMARY KEY,
@@ -106,6 +150,8 @@ export function openDb(path: string): Database.Database {
       wallet TEXT NOT NULL,
       amount_micro INTEGER NOT NULL,
       status TEXT NOT NULL DEFAULT 'queued',
+      kind TEXT NOT NULL DEFAULT 'earnings',
+      campaign_id TEXT,
       tx TEXT,
       created_at INTEGER NOT NULL
     );
@@ -124,6 +170,20 @@ export function openDb(path: string): Database.Database {
   }
   if (!campaignCols.some((c) => c.name === "manage_key_hash")) {
     db.exec(`ALTER TABLE campaigns ADD COLUMN manage_key_hash TEXT`);
+  }
+  if (!campaignCols.some((c) => c.name === "refunded_micro")) {
+    db.exec(`ALTER TABLE campaigns ADD COLUMN refunded_micro INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!campaignCols.some((c) => c.name === "owner_wallet")) {
+    db.exec(`ALTER TABLE campaigns ADD COLUMN owner_wallet TEXT`);
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_campaigns_owner ON campaigns(owner_wallet)`);
+  const payoutCols = db.prepare(`PRAGMA table_info(payouts)`).all() as { name: string }[];
+  if (!payoutCols.some((c) => c.name === "kind")) {
+    db.exec(`ALTER TABLE payouts ADD COLUMN kind TEXT NOT NULL DEFAULT 'earnings'`);
+  }
+  if (!payoutCols.some((c) => c.name === "campaign_id")) {
+    db.exec(`ALTER TABLE payouts ADD COLUMN campaign_id TEXT`);
   }
   return db;
 }

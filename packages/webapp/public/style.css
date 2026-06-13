@@ -14,12 +14,25 @@
 
 * { box-sizing: border-box; }
 
+html { color-scheme: dark; }
+
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
   font: 13.5px/1.55 var(--mono);
+  -webkit-tap-highlight-color: transparent;
 }
+
+a, button, input, .campaign { touch-action: manipulation; }
+
+/* Visually hidden until keyboard-focused. */
+.skip-link {
+  position: absolute; left: 16px; top: -100px;
+  background: var(--accent); color: #06121c; padding: 8px 14px;
+  font-weight: 600; text-decoration: none; z-index: 20;
+}
+.skip-link:focus { top: 16px; }
 
 header {
   display: flex;
@@ -37,11 +50,14 @@ header {
 h1 { margin: 0; font-size: 18px; letter-spacing: 1px; }
 .tagline { margin: 0; color: var(--muted); font-size: 12px; }
 
-.identity { display: flex; gap: 16px; flex-wrap: wrap; }
-.wallet, .board-name { display: flex; flex-direction: column; gap: 4px; }
-.wallet { min-width: 340px; }
-.board-name { min-width: 200px; }
-.identity label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+.identity { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+#signed-out { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+#signed-out[hidden], #signed-in[hidden] { display: none; }
+.signin-note { margin: 0; color: var(--muted); font-size: 11px; }
+#signed-in { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.account { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+#acct-label { font-weight: 600; font-size: 13.5px; }
+#acct-wallet { color: var(--muted); font-size: 12px; }
 
 input, button {
   font: inherit;
@@ -50,9 +66,11 @@ input, button {
   border: 1px solid var(--border);
   border-radius: 0;
   padding: 8px 12px;
+  min-height: 38px;
 }
-input:focus { outline: 1px solid var(--accent); }
-input#wallet { font-size: 13px; }
+input:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+input:disabled, input[readonly] { color: var(--muted); }
+input[readonly]:focus-visible { outline-color: var(--border); }
 
 button {
   cursor: pointer;
@@ -61,9 +79,33 @@ button {
   font-weight: 600;
   border: none;
   white-space: nowrap;
+  transition: filter 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
 }
 button:hover { filter: brightness(1.1); }
+button:focus-visible, .linklike:focus-visible, [role="button"]:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
 button.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); font-weight: 500; }
+button.danger { color: #ff7b7b; border-color: #5a2a2a; }
+button.primary { background: var(--accent); color: #06121c; }
+.icon-btn {
+  background: transparent; border: none; color: var(--muted);
+  font-size: 16px; padding: 4px 10px; min-height: 0; line-height: 1;
+}
+.icon-btn:hover { color: var(--text); filter: none; }
+.ok-text { color: var(--green); }
+button:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
+.linklike {
+  background: none; border: none; padding: 0; min-height: 0;
+  color: var(--accent); text-decoration: underline; cursor: pointer;
+  font: inherit; font-weight: 500;
+}
+/* margin-left:auto keeps the button+hint flush to the panel's right edge even
+   when panel-head wraps it onto its own line (space-between would otherwise
+   pin the wrapped box left, floating the narrow button mid-row). */
+.create-cta { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; margin-left: auto; }
+.gate-hint { margin: 0; text-align: right; }
 
 main {
   max-width: 1080px;
@@ -80,6 +122,14 @@ main {
 }
 .panel h2 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: 2px; color: var(--accent); }
 .hint { color: var(--muted); font-size: 12px; margin: 0 0 14px; }
+.empty { color: var(--muted); font-size: 12.5px; margin: 8px 0 0; }
+.empty b { color: var(--text); }
+
+.panel-head {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 16px; flex-wrap: wrap;
+}
+.panel-head .hint { margin-bottom: 8px; }
 
 .market-facts { display: flex; gap: 28px; flex-wrap: wrap; font-size: 12.5px; }
 .market-facts .fact b { display: block; font-size: 15.5px; color: var(--text); }
@@ -96,14 +146,90 @@ td.mono, .mono { font-family: var(--mono); font-size: 13px; }
 .serving { color: var(--green); font-weight: 600; font-size: 12px; }
 .row-mine td { background: rgba(76, 194, 255, 0.05); }
 
-form#create-form { display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap; }
-.field { display: flex; flex-direction: column; gap: 4px; }
-.field.grow { flex: 1; min-width: 240px; }
-.field label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
-.count { color: var(--muted); text-transform: none; letter-spacing: 0; }
-#bid { width: 110px; }
+/* status badges */
+.badge {
+  display: inline-block; padding: 2px 10px; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 1px;
+  border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
+}
+.badge-live { border-color: var(--green); color: var(--green); }
+.badge-warn { border-color: var(--amber); color: var(--amber); }
+.badge-dead { border-color: #5a2a2a; color: #ff7b7b; }
+.badge-unfunded { border-color: var(--red); color: var(--red); }
 
-.preview { margin-top: 16px; }
+/* my campaigns — compact cards, tap to manage */
+.campaign {
+  border: 1px solid var(--border);
+  padding: 14px 16px; margin-bottom: 12px; background: var(--panel-2);
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+.campaign:hover { border-color: var(--accent); }
+.campaign:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.campaign.cancelled { opacity: 0.75; border-left: 2px solid #5a2a2a; }
+.campaign.unfunded { border-left: 2px solid var(--red); }
+.unfunded-note { color: var(--red); font-size: 12.5px; margin: 0 0 10px; }
+.fund-cta { padding: 6px 14px; }
+.campaign .top { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.campaign .msg { font-family: var(--mono); font-size: 13.5px; color: var(--accent); min-width: 0; overflow-wrap: anywhere; }
+.cell-msg { overflow-wrap: anywhere; }
+.campaign .meta, .meta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.campaign .stats { display: flex; gap: 22px; margin: 10px 0 8px; font-size: 12.5px; color: var(--muted); flex-wrap: wrap; }
+.campaign .stats b { color: var(--text); }
+.budgetbar { height: 6px; background: #05070c; overflow: hidden; margin: 8px 0 12px; }
+.budgetbar > div { height: 100%; background: linear-gradient(90deg, var(--green), var(--amber)); }
+.card-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.manage-btn { padding: 6px 14px; }
+
+/* dialogs */
+dialog {
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border);
+  width: min(640px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  padding: 22px 26px;
+  overscroll-behavior: contain;
+}
+dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+
+/* Entry animation (compositor-only props; older browsers just skip it). */
+dialog[open] {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+@starting-style {
+  dialog[open] { opacity: 0; transform: translateY(8px); }
+}
+dialog[open]::backdrop {
+  opacity: 1;
+  transition: opacity 0.18s ease;
+}
+@starting-style {
+  dialog[open]::backdrop { opacity: 0; }
+}
+dialog h3 { margin: 0; color: var(--amber); font-size: 15px; text-transform: uppercase; letter-spacing: 1px; }
+#pay-dialog h3 { margin-bottom: 8px; }
+dialog pre {
+  background: #05070c; border: 1px solid var(--border);
+  padding: 12px; font-size: 12px; overflow-x: auto; font-family: var(--mono);
+}
+.dialog-head {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 12px; margin-bottom: 16px;
+}
+.dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+
+/* create form (inside dialog) — stacked fields */
+form#create-form, form#settings-form { display: flex; flex-direction: column; gap: 14px; }
+#settings-welcome { margin-bottom: 2px; }
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
+.field .hint { margin: 4px 0 0; }
+.count { color: var(--muted); text-transform: none; letter-spacing: 0; }
+#bid { max-width: 160px; }
+
+.preview { margin: 0; }
 .preview-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); display: block; margin-bottom: 6px; }
 .preview code {
   display: block; padding: 10px 14px;
@@ -113,40 +239,103 @@ form#create-form { display: flex; gap: 14px; align-items: flex-end; flex-wrap: w
 }
 #preview-msg { color: var(--accent); }
 
-.campaign {
-  border: 1px solid var(--border);
-  padding: 14px 16px; margin-bottom: 12px; background: var(--panel-2);
+/* manage dialog */
+.notice {
+  padding: 10px 14px; margin: 0 0 14px;
+  border: 1px solid var(--border); background: var(--panel-2);
+  font-size: 12.5px;
 }
-.campaign .top { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; }
-.campaign .msg { font-family: var(--mono); font-size: 13.5px; color: var(--accent); }
-.campaign .meta { color: var(--muted); font-size: 12px; }
-.campaign .stats { display: flex; gap: 22px; margin: 10px 0 12px; font-size: 12.5px; color: var(--muted); flex-wrap: wrap; }
-.campaign .stats b { color: var(--text); }
-.budgetbar { height: 6px; background: #05070c; overflow: hidden; margin: 8px 0 12px; }
-.budgetbar > div { height: 100%; background: linear-gradient(90deg, var(--green), var(--amber)); }
-.campaign .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.campaign .actions input { width: 90px; padding: 6px 10px; }
-.campaign .actions label { color: var(--muted); font-size: 12px; }
-
-dialog {
-  background: var(--panel); color: var(--text);
-  border: 1px solid var(--border);
-  max-width: 640px; padding: 22px 26px;
+.notice-unfunded { border-color: var(--red); background: rgba(255, 107, 107, 0.07); }
+.notice-unfunded b { color: var(--red); text-transform: uppercase; letter-spacing: 1px; font-size: 11px; }
+.manage-msg { font-family: var(--mono); color: var(--accent); font-size: 14px; margin: 0 0 6px; overflow-wrap: anywhere; }
+#manage-body > .meta { margin: 0 0 16px; }
+.stat-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 1px; background: var(--border); border: 1px solid var(--border);
+  margin-bottom: 14px;
 }
-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
-dialog h3 { margin: 0 0 8px; color: var(--amber); }
-dialog pre {
-  background: #05070c; border: 1px solid var(--border);
-  padding: 12px; font-size: 12px; overflow-x: auto; font-family: var(--mono);
+.stat { background: var(--panel-2); padding: 10px 12px; }
+.stat span { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+.stat b { font-size: 15px; }
+.manage-section { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 14px; }
+.manage-section h4 {
+  margin: 0 0 10px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 2px; color: var(--muted); font-weight: 600;
 }
-.dialog-actions { text-align: right; }
+.manage-section .hint { margin: 8px 0 0; }
+.control-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.control-row .field input { width: 130px; }
+.danger-zone { display: flex; gap: 10px; flex-wrap: wrap; }
+.refunds { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12.5px; margin-bottom: 4px; }
+.refunds b { color: var(--text); }
 
 #toast {
-  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-  background: var(--panel-2); border: 1px solid var(--border);
+  /* inset + margin also override the popover UA centering styles */
+  position: fixed; inset: auto auto 24px 50%; margin: 0; transform: translateX(-50%);
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
   padding: 10px 18px; font-size: 13px; opacity: 0; pointer-events: none;
-  transition: opacity 0.25s; max-width: 80vw;
+  transition: opacity 0.25s; max-width: calc(100vw - 32px);
+  z-index: 10;
 }
 #toast.show { opacity: 1; }
 #toast.ok { border-color: var(--green); }
 #toast.err { border-color: var(--red); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::backdrop {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
+/* ---- mobile ---- */
+@media (max-width: 720px) {
+  body { font-size: 13px; }
+  header { padding: 14px 16px; gap: 14px; }
+  .tagline { display: none; }
+  .identity { width: 100%; }
+  #signed-out { width: 100%; align-items: stretch; }
+  #signed-in { width: 100%; justify-content: space-between; }
+  .account { align-items: flex-start; }
+  .create-cta { align-items: stretch; width: 100%; }
+
+  main { padding: 16px 12px 56px; gap: 14px; }
+  .panel { padding: 14px 14px 16px; }
+  .panel-head { flex-direction: column; align-items: stretch; }
+  .panel-head button:not(.linklike) { width: 100%; min-height: 44px; }
+  .gate-hint { text-align: center; }
+  .market-facts { gap: 14px 20px; }
+
+  /* auction board: table rows become cards */
+  #board thead { display: none; }
+  #board, #board tbody, #board tr, #board td { display: block; width: 100%; }
+  #board tr { border: 1px solid var(--border); margin-bottom: 10px; padding: 8px 0; background: var(--panel-2); }
+  #board td { border: none; padding: 3px 12px; display: flex; justify-content: space-between; gap: 12px; overflow-wrap: anywhere; }
+  #board td::before {
+    content: attr(data-l);
+    color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+    flex-shrink: 0; padding-top: 2px;
+  }
+  #board td:empty, #board .cell-serving:not(:has(.serving)) { display: none; }
+  #board .cell-serving::before { content: none; }
+  .row-mine { border-color: var(--accent) !important; }
+  .row-mine td { background: transparent; }
+
+  .campaign .stats { gap: 10px 18px; }
+  .card-foot { flex-direction: row; }
+  .manage-btn, .fund-cta { min-height: 40px; }
+
+  /* dialogs become bottom sheets */
+  dialog {
+    width: 100vw; max-width: 100vw; margin: auto 0 0;
+    max-height: 92vh; padding: 18px 16px;
+    border-left: none; border-right: none; border-bottom: none;
+  }
+  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+  .control-row { align-items: stretch; flex-direction: column; }
+  .control-row .field input { width: 100%; }
+  .control-row button, .danger-zone button, .manage-section > button { width: 100%; min-height: 44px; }
+  .dialog-actions { flex-direction: column-reverse; }
+  .dialog-actions button { width: 100%; min-height: 44px; }
+  #bid { max-width: none; }
+}
