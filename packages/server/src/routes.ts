@@ -498,7 +498,7 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     if (!serveLimiter.allow(clientIp(req), now)) {
       return void res.status(429).json({ error: "rate limit exceeded" });
     }
-    const winner = market.winner();
+    const winner = market.pickServe();
     if (!winner) return void res.status(204).end();
 
     const impressionMicro = market.impressionCostMicro(winner);

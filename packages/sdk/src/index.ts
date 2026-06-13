@@ -3,7 +3,7 @@
  *
  * A "publisher" is any developer surface that can show one line of text while
  * an AI agent is thinking — a spinner, a status bar, a TUI footer. The SDK
- * fetches the current auction winner, enforces the view threshold before an
+ * fetches the next campaign in the serving rotation, enforces the view threshold before an
  * impression counts, and reports idempotent events so retries never
  * double-bill advertisers or double-credit you.
  *
@@ -59,7 +59,7 @@ export class Codevertise {
     this.fetch = opts.fetchImpl ?? fetch;
   }
 
-  /** Current auction winner, or null when there is no fill. */
+  /** Next campaign in the serving rotation, or null when there is no fill. */
   async fetchAd(): Promise<Ad | null> {
     const res = await this.fetch(
       `${this.endpoint}/v1/serve?surface=${encodeURIComponent(this.surface)}&pub=${encodeURIComponent(this.publisher)}`,

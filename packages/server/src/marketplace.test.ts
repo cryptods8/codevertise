@@ -58,11 +58,37 @@ describe("auction", () => {
     expect(raised.bid_per_block_micro).toBe(2.5 * USD);
   });
 
-  it("a raised bid takes over serving", () => {
+  it("a raised bid leads the rotation", () => {
     const low = fundedCampaign(m, 2, 10);
     fundedCampaign(m, 5, 10);
     m.raiseBid(low.id, 6 * USD);
     expect(m.winner()?.id).toBe(low.id);
+  });
+
+  it("being outbid does not suspend an active, funded campaign", () => {
+    const outbid = fundedCampaign(m, 2, 10);
+    const top = fundedCampaign(m, 5, 10);
+    // Both stay in the live pool; the top bid merely leads it.
+    expect(m.eligible().map((c) => c.id)).toEqual([top.id, outbid.id]);
+    expect(m.auctionState().every((b) => b.serving)).toBe(true);
+  });
+
+  it("serving cycles the whole pool, weighted by bid", () => {
+    const a = fundedCampaign(m, 3, 100); // weight 3
+    const b = fundedCampaign(m, 1, 100); // weight 1
+    const served: Record<string, number> = { [a.id]: 0, [b.id]: 0 };
+    for (let i = 0; i < 4; i++) served[m.pickServe()!.id]++;
+    // 3:1 share over a full cycle — and the lower bid still gets served.
+    expect(served[a.id]).toBe(3);
+    expect(served[b.id]).toBe(1);
+  });
+
+  it("an explicit pause is the only thing that drops an active campaign from serving", () => {
+    const a = fundedCampaign(m, 3, 100);
+    const b = fundedCampaign(m, 1, 100);
+    m.setCampaignStatus(b.id, "paused");
+    expect(m.eligible().map((c) => c.id)).toEqual([a.id]);
+    expect(m.pickServe()?.id).toBe(a.id);
   });
 });
 

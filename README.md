@@ -20,7 +20,7 @@ Codevertise is a block-auction marketplace for that line, with crypto-native pay
 |---|---|
 | Ad unit | 1 block = 1,000 five-second impressions |
 | Auction | English ascending, min bid $1.00/block, min raise $0.50 |
-| Serving | Highest funded bid serves; ties broken by age; unfunded bids never serve |
+| Serving | Every funded active campaign serves, rotating per recipient (smooth weighted round-robin); a $5 bid is served ~5× as often as a $1 bid. Bids buy share, not exclusivity — a campaign leaves serving only on explicit pause/cancel or when its budget runs out, never for being outbid. Unfunded bids never serve |
 | Clicks | Billed at 50× the impression rate |
 | Publisher share | 40% of spend by default (operator-set via `PUBLISHER_SHARE`), credited per event to the publisher's wallet |
 | Advertiser privacy | Wallets never appear on public surfaces; advertisers pick an optional public label for the board |
@@ -88,7 +88,7 @@ POST /v1/campaigns/:id/bid             {bidPerBlockUsd} + X-Manage-Key  raise (E
 POST /v1/campaigns/:id/pause|resume    X-Manage-Key (or admin token)   kill switch
 GET  /v1/campaigns/:id/stats           X-Manage-Key                    impressions/clicks/spend
 POST /v1/fund?campaign=&blocks=        💰 PAID — 402 until x402 settlement; credits escrow
-GET  /v1/serve?surface=&pub=           current winner: message, url, rates
+GET  /v1/serve?surface=&pub=           next campaign in the rotation: message, url, rates
 POST /v1/events                        {token, type: impression|click} — serve-token gated
 GET  /v1/publishers/:wallet            earnings ledger + payout history
 POST /v1/publishers/:wallet/payouts    request USDC payout (≥ $10)

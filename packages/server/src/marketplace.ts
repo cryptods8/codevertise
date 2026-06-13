@@ -17,6 +17,8 @@ function sha256Hex(s: string): string {
  */
 export class Marketplace {
   private secret?: Buffer;
+  /** Per-campaign smooth-weighted-round-robin state for serve rotation. */
+  private serveWeights = new Map<string, number>();
 
   constructor(
     readonly db: Database.Database,
@@ -241,10 +243,12 @@ export class Marketplace {
   }
 
   /**
-   * The serving winner: highest bid among active campaigns that can still
-   * afford at least one impression; ties broken by age (earlier bid wins).
+   * The live serving pool: every active campaign that can still afford at
+   * least one impression, ranked by bid (ties broken by age). Being outbid no
+   * longer drops a campaign out — only an explicit pause/cancel or running out
+   * of budget does. The whole pool serves; bids decide share, not exclusivity.
    */
-  winner(): Campaign | undefined {
+  eligible(): Campaign[] {
     const rows = this.db
       .prepare(
         `SELECT * FROM campaigns
@@ -252,12 +256,55 @@ export class Marketplace {
          ORDER BY bid_per_block_micro DESC, created_at ASC`,
       )
       .all() as Campaign[];
-    return rows.find((c) => this.remainingMicro(c) >= this.impressionCostMicro(c));
+    return rows.filter((c) => this.remainingMicro(c) >= this.impressionCostMicro(c));
+  }
+
+  /**
+   * The auction leader: highest funded active bid (ties broken by age). It no
+   * longer monopolises serving — it's the top of the rotation, used for the
+   * board's ranking and as the headline price.
+   */
+  winner(): Campaign | undefined {
+    return this.eligible()[0];
+  }
+
+  /**
+   * Pick the next campaign to serve, cycling the eligible pool so multiple
+   * active campaigns rotate for the same recipient instead of one winner
+   * taking every slot. Uses smooth weighted round-robin keyed on the bid:
+   * a $5 bid is served ~5x as often as a $1 bid, but the $1 campaign still
+   * gets its turns — it is never suspended for being outbid.
+   */
+  pickServe(): Campaign | undefined {
+    const pool = this.eligible();
+    if (pool.length <= 1) return pool[0];
+
+    // Forget campaigns that have left the pool so their weight can't grow stale.
+    const live = new Set(pool.map((c) => c.id));
+    for (const id of this.serveWeights.keys()) {
+      if (!live.has(id)) this.serveWeights.delete(id);
+    }
+
+    const total = pool.reduce((sum, c) => sum + c.bid_per_block_micro, 0);
+    let best: Campaign | undefined;
+    let bestWeight = -Infinity;
+    for (const c of pool) {
+      const next = (this.serveWeights.get(c.id) ?? 0) + c.bid_per_block_micro;
+      this.serveWeights.set(c.id, next);
+      // Strict `>` keeps the pool's (bid desc, age asc) order as the tiebreak.
+      if (next > bestWeight) {
+        bestWeight = next;
+        best = c;
+      }
+    }
+    this.serveWeights.set(best!.id, bestWeight - total);
+    return best;
   }
 
   /**
    * Public auction board: ranked queue with remaining budget. Wallets stay
    * private — the board identifies advertisers by their chosen label only.
+   * Every funded active campaign is `serving` now, since the pool rotates.
    */
   auctionState() {
     const rows = this.db
@@ -266,7 +313,7 @@ export class Marketplace {
          ORDER BY bid_per_block_micro DESC, created_at ASC`,
       )
       .all() as Campaign[];
-    const winner = this.winner();
+    const serving = new Set(this.eligible().map((c) => c.id));
     return rows.map((c, i) => ({
       rank: i + 1,
       campaignId: c.id,
@@ -274,7 +321,7 @@ export class Marketplace {
       message: c.message,
       bidPerBlockMicro: c.bid_per_block_micro,
       remainingMicro: this.remainingMicro(c),
-      serving: c.id === winner?.id,
+      serving: serving.has(c.id),
     }));
   }
 
