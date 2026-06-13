@@ -272,6 +272,70 @@ form#create-form, form#settings-form { display: flex; flex-direction: column; ga
 .refunds { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12.5px; margin-bottom: 4px; }
 .refunds b { color: var(--text); }
 
+/* bid-to-top condition (above my campaigns) */
+.bid-to-top { font-size: 13px; color: var(--muted); margin-bottom: 0; }
+.bid-to-top b { color: var(--accent); font-weight: 600; }
+
+/* board panel: full-screen toggle sits opposite the heading */
+#board-panel .panel-head { align-items: center; }
+#open-fullboard { min-height: 34px; padding: 6px 14px; }
+
+/* ---- full-screen auction board (spectator view) ---- */
+dialog.fullboard {
+  width: 100vw; max-width: 100vw;
+  height: 100dvh; max-height: 100dvh;
+  margin: 0; padding: 28px 32px 32px;
+  border: none;
+}
+/* display lives on [open] so a closed dialog still inherits the UA
+   `dialog:not([open]) { display: none }` instead of staying laid out. */
+dialog.fullboard[open] { display: flex; flex-direction: column; }
+.fullboard-head {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 18px; flex-wrap: wrap; margin-bottom: 22px;
+}
+.fullboard-title { display: flex; align-items: center; gap: 16px; min-width: 0; }
+.fullboard-title .logo { font-size: 26px; color: var(--accent); letter-spacing: 2px; }
+.fullboard-title h3 { color: var(--accent); }
+.fullboard-sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+.fullboard-actions { display: flex; align-items: center; gap: 12px; }
+#fullboard-outbid { min-height: 44px; padding: 10px 22px; font-size: 14px; }
+.fullboard-table { font-size: 16px; }
+.fullboard-table th { font-size: 12px; padding: 8px 14px; }
+.fullboard-table td { padding: 14px 14px; }
+.fullboard-table .serving { font-size: 13px; }
+.fullboard-table tr:first-child td { background: rgba(76, 194, 255, 0.06); }
+.fullboard-foot { margin: auto 0 0; padding-top: 18px; color: var(--muted); font-size: 12.5px; }
+
+/* outbid-with-which-campaign picker */
+#pick-list { display: flex; flex-direction: column; gap: 8px; }
+.pick-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 14px;
+  width: 100%; text-align: left; background: var(--panel-2);
+  border: 1px solid var(--border); color: var(--text); font-weight: 500;
+  padding: 12px 14px; min-height: 48px;
+}
+.pick-row:hover { border-color: var(--accent); filter: none; }
+.pick-msg { color: var(--accent); overflow-wrap: anywhere; min-width: 0; }
+.pick-meta { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+
+@media (max-width: 720px) {
+  dialog.fullboard { padding: 16px 14px 20px; }
+  .fullboard-actions { width: 100%; }
+  #fullboard-outbid { flex: 1; }
+  /* reuse the board's card layout on small screens */
+  .fullboard-table thead { display: none; }
+  .fullboard-table, .fullboard-table tbody, .fullboard-table tr, .fullboard-table td { display: block; width: 100%; }
+  .fullboard-table tr { border: 1px solid var(--border); margin-bottom: 10px; padding: 8px 0; background: var(--panel-2); }
+  .fullboard-table td { border: none; padding: 4px 12px; display: flex; justify-content: space-between; gap: 12px; overflow-wrap: anywhere; }
+  .fullboard-table td::before {
+    content: attr(data-l); color: var(--muted); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 1px; flex-shrink: 0;
+  }
+  .fullboard-table td:empty, .fullboard-table .cell-serving:not(:has(.serving)) { display: none; }
+  .fullboard-table .cell-serving::before { content: none; }
+}
+
 #toast {
   /* inset + margin also override the popover UA centering styles */
   position: fixed; inset: auto auto 24px 50%; margin: 0; transform: translateX(-50%);

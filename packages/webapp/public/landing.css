@@ -130,6 +130,24 @@ section { padding: 60px 0; border-bottom: 1px solid var(--border); scroll-margin
 .card .card-cta a { font-size: 13px; text-decoration: none; font-weight: 600; }
 .card .card-cta a:hover { text-decoration: underline; }
 
+/* ---- live auction board preview ---- */
+.board-card { background: var(--panel); border: 1px solid var(--border); overflow-x: auto; }
+.board-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.board-table th {
+  text-align: left; color: var(--muted); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 1px; padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.board-table td { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.board-table tr:last-child td { border-bottom: none; }
+.board-table tr:first-child td { background: rgba(76, 194, 255, 0.05); }
+.board-table .mono { font-family: var(--mono); }
+.board-table .serving { color: var(--green); font-weight: 600; font-size: 12px; white-space: nowrap; }
+.board-loading { color: var(--muted); text-align: center; }
+.board-empty { color: var(--muted); font-size: 13px; padding: 22px 16px; margin: 0; }
+.board-cta { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 20px; }
+.board-cta-note { color: var(--muted); font-size: 12.5px; }
+
 /* ---- economics fact strip ---- */
 .facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); }
 .fact { background: var(--panel); padding: 18px 18px; }
@@ -188,6 +206,20 @@ footer { padding: 36px 0 48px; border-bottom: none; }
   .hero { padding: 48px 0 40px; }
   .hero h2 { font-size: 25px; }
   .facts { grid-template-columns: 1fr 1fr; }
+
+  /* auction preview: table rows become cards */
+  .board-card { overflow-x: visible; }
+  .board-table thead { display: none; }
+  .board-table, .board-table tbody, .board-table tr, .board-table td { display: block; width: 100%; }
+  .board-table tr { border-bottom: 1px solid var(--border); padding: 6px 0; }
+  .board-table tr:last-child { border-bottom: none; }
+  .board-table td { border: none; padding: 4px 16px; display: flex; justify-content: space-between; gap: 12px; overflow-wrap: anywhere; }
+  .board-table td::before {
+    content: attr(data-l); color: var(--muted); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 1px; flex-shrink: 0;
+  }
+  .board-table td:empty, .board-table .cell-serving:not(:has(.serving)) { display: none; }
+  .board-table .cell-serving::before { content: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

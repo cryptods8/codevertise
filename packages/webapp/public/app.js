@@ -15,6 +15,20 @@ const shortWallet = (w) => `${w.slice(0, 6)}…${w.slice(-4)}`;
 let info = null;
 let board = [];
 
+// ---- bid-to-top economics (shared by the my-campaigns header and the
+// full-screen "outbid" button) -------------------------------------------
+const minBidMicro = () => (info?.adUnit?.minBidUsd ?? 1) * USD;
+const incrementMicro = () => (info?.adUnit?.minBidIncrementUsd ?? 0.5) * USD;
+
+// The micro-USD bid required to claim rank #1, ignoring `excludeId` (the
+// caller's own campaign when it may already lead). Empty board → the floor.
+function bidToTopMicro(excludeId = null) {
+  const top = board.find((b) => b.campaignId !== excludeId);
+  return top ? top.bidPerBlockMicro + incrementMicro() : minBidMicro();
+}
+// As a whole-cent USD number, rounded up so it always clears the threshold.
+const bidToTopUsd = (excludeId = null) => Math.ceil((bidToTopMicro(excludeId) / USD) * 100) / 100;
+
 // ---- SIWE session (server-side, cookie-backed — works from any browser) ----
 
 let session = null; // { wallet, label, settingsSet } or null
@@ -341,14 +355,17 @@ document.addEventListener("click", (e) => {
   if (closer) closer.closest("dialog")?.close();
 });
 
-$("#open-create").addEventListener("click", () => {
+function openCreate({ bidUsd } = {}) {
   if (info) {
     $("#bid").min = info.adUnit.minBidUsd;
     $("#bid-hint").textContent = `min bid $${info.adUnit.minBidUsd.toFixed(2)} / block · 1 block = ${info.adUnit.block}`;
   }
+  if (bidUsd != null) $("#bid").value = bidUsd.toFixed(2);
   createDialog.showModal();
   $("#message").focus();
-});
+}
+
+$("#open-create").addEventListener("click", () => openCreate());
 
 // ---- market facts ----
 
@@ -366,11 +383,8 @@ async function loadInfo() {
 
 // ---- auction board ----
 
-async function refreshBoard() {
-  board = (await api("/v1/auction")).body.board;
-  $("#board-empty").hidden = board.length > 0;
-  $("#board").style.display = board.length ? "" : "none";
-  $("#board tbody").innerHTML = board
+function boardRowsHtml() {
+  return board
     .map((b) => {
       const isMine = mineIds.has(b.campaignId);
       return `<tr class="${isMine ? "row-mine" : ""}">
@@ -384,6 +398,132 @@ async function refreshBoard() {
     })
     .join("");
 }
+
+async function refreshBoard() {
+  board = (await api("/v1/auction")).body.board;
+  const rows = boardRowsHtml();
+  $("#board-empty").hidden = board.length > 0;
+  $("#board").style.display = board.length ? "" : "none";
+  $("#board tbody").innerHTML = rows;
+  renderBidToTop();
+  if (fullboardDialog.open) renderFullboard(rows);
+}
+
+// The "what's the bid to top" condition above my campaigns. It frames every
+// other action — create or raise — around one number.
+function renderBidToTop() {
+  const el = $("#bid-to-top");
+  if (!el) return;
+  const toTop = `$${bidToTopUsd().toFixed(2)}/block`;
+  if (!board.length) {
+    el.innerHTML = `the board is open — bid <b>${toTop}</b> to claim <b>#1</b> and serve under every agent.`;
+    return;
+  }
+  const leader = board[0];
+  if (mineIds.has(leader.campaignId)) {
+    el.innerHTML = `your campaign <b>leads</b> at ${fmt(leader.bidPerBlockMicro)}/block — bid <b>${toTop}</b> to extend your lead.`;
+    return;
+  }
+  el.innerHTML = `top bid is <b>${fmt(leader.bidPerBlockMicro)}/block</b> — bid <b>${toTop}</b> to take <b>#1</b>.`;
+}
+
+// ---- full-screen auction board (spectator view + one-click outbid) ----
+
+const fullboardDialog = $("#fullboard-dialog");
+
+function renderFullboard(rows = boardRowsHtml()) {
+  $("#fullboard-empty").hidden = board.length > 0;
+  $("#fullboard-table").style.display = board.length ? "" : "none";
+  $("#fullboard-table tbody").innerHTML = rows;
+  const toTop = `$${bidToTopUsd().toFixed(2)}/block`;
+  const btn = $("#fullboard-outbid");
+  if (board.length) {
+    $("#fullboard-sub").textContent = `${board.length} campaign${board.length === 1 ? "" : "s"} bidding · top line serves under every AI coding agent`;
+    btn.textContent = `outbid the top line — ${toTop}`;
+  } else {
+    $("#fullboard-sub").textContent = "no one is bidding yet — the first funded line serves under every agent";
+    btn.textContent = `claim the board — ${toTop}`;
+  }
+  $("#fullboard-foot").textContent = session
+    ? `signed in as ${session.label ?? shortWallet(session.wallet)}`
+    : "sign in with your wallet to outbid — it's a free signature, no gas";
+}
+
+function openFullboard() {
+  renderFullboard();
+  if (!fullboardDialog.open) fullboardDialog.showModal();
+}
+
+$("#open-fullboard").addEventListener("click", openFullboard);
+
+// The headline action: outbid whoever is on top. Branches on how many
+// campaigns the bidder owns — none (create one, bid prefilled), one (raise
+// it), or several (pick which one to raise).
+$("#fullboard-outbid").addEventListener("click", async () => {
+  if (!session) {
+    toast("sign in with your wallet to outbid", "err");
+    await signIn();
+    if (!session) return;
+  }
+  const targetUsd = bidToTopUsd();
+  const owned = mine.filter((c) => c.status !== "cancelled");
+  if (owned.length === 0) {
+    fullboardDialog.close();
+    openCreate({ bidUsd: targetUsd });
+  } else if (owned.length === 1) {
+    await raiseToTop(owned[0], targetUsd);
+  } else {
+    openPicker(targetUsd);
+  }
+});
+
+// Raise one campaign to (at least) the bid-to-top price. The server requires a
+// raise of >= current + increment, so a campaign already on top still nudges up.
+async function raiseToTop(c, targetUsd) {
+  const floorUsd = c.bid_per_block_micro / USD + (info?.adUnit?.minBidIncrementUsd ?? 0.5);
+  const newBid = Math.ceil(Math.max(targetUsd, floorUsd) * 100) / 100;
+  try {
+    await api(`/v1/campaigns/${c.id}/bid`, {
+      method: "POST",
+      headers: manageHeaders(c.id, { "content-type": "application/json" }),
+      body: JSON.stringify({ bidPerBlockUsd: newBid }),
+    });
+    toast(`✓ "${c.message}" now bids $${newBid.toFixed(2)}/block`);
+    await refreshAll();
+    if (needsFunding(c)) toast("bid raised — fund the campaign to actually serve", "err");
+  } catch (err) {
+    toast(`outbid failed: ${err.message}`, "err");
+  }
+}
+
+// Case (c): more than one campaign — let the bidder choose which one outbids.
+const pickDialog = $("#pick-dialog");
+let pickTargetUsd = 0;
+
+function openPicker(targetUsd) {
+  pickTargetUsd = targetUsd;
+  $("#pick-sub").textContent = `raise the chosen campaign to $${targetUsd.toFixed(2)}/block to take #1.`;
+  $("#pick-list").innerHTML = mine
+    .filter((c) => c.status !== "cancelled")
+    .map((c) => {
+      const onBoard = board.find((b) => b.campaignId === c.id);
+      const at = onBoard ? `#${onBoard.rank} · ` : "";
+      return `<button class="pick-row" type="button" data-id="${c.id}">
+        <span class="pick-msg mono">${esc(c.message)}</span>
+        <span class="pick-meta">${at}${fmt(c.bid_per_block_micro)}/block</span>
+      </button>`;
+    })
+    .join("");
+  if (!pickDialog.open) pickDialog.showModal();
+}
+
+$("#pick-list").addEventListener("click", async (e) => {
+  const row = e.target.closest(".pick-row");
+  if (!row) return;
+  const c = mine.find((m) => m.id === row.dataset.id);
+  pickDialog.close();
+  if (c) await raiseToTop(c, pickTargetUsd);
+});
 
 // ---- create campaign (modal) ----
 
@@ -835,5 +975,14 @@ initWallet()
   .then(loadSession)
   .then(loadInfo)
   .then(refreshAll)
+  // Deep link from the landing page: /console.html#board lands straight in the
+  // full-screen spectator board.
+  .then(() => {
+    if (location.hash === "#board") openFullboard();
+  })
   .catch((err) => toast(`marketplace unreachable: ${err.message}`, "err"));
+// Also respond to in-page hash changes (e.g. clicking a #board link).
+window.addEventListener("hashchange", () => {
+  if (location.hash === "#board") openFullboard();
+});
 setInterval(() => refreshAll().catch(() => {}), 3000);

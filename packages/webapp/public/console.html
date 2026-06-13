@@ -59,21 +59,28 @@
   </header>
 
   <main id="main">
-    <section class="panel" id="market-panel">
-      <h2>market</h2>
-      <div class="market-facts" id="market-facts">loading…</div>
-    </section>
-
-    <section class="panel">
+    <section class="panel" id="mine-panel">
       <div class="panel-head">
         <div>
-          <h2>live auction board</h2>
-          <p class="hint">English ascending auction · highest funded bid serves · 1 block = 1,000 × 5s impressions</p>
+          <h2>my campaigns</h2>
+          <p class="hint bid-to-top" id="bid-to-top">loading the board…</p>
         </div>
         <div class="create-cta">
           <button id="open-create" class="primary" type="button" disabled>+ new campaign</button>
           <p class="hint gate-hint" id="create-gate"><button class="linklike" id="create-gate-signin" type="button">sign in with your wallet</button> to create campaigns</p>
         </div>
+      </div>
+      <p class="hint" id="mine-hint">campaigns created while signed in follow your wallet — manage them from any browser. tap a campaign to manage it.</p>
+      <div id="mine"></div>
+    </section>
+
+    <section class="panel" id="board-panel">
+      <div class="panel-head">
+        <div>
+          <h2>live auction board</h2>
+          <p class="hint">English ascending auction · highest funded bid serves · 1 block = 1,000 × 5s impressions</p>
+        </div>
+        <button id="open-fullboard" class="ghost" type="button">⛶ full-screen</button>
       </div>
       <table id="board">
         <thead>
@@ -84,12 +91,44 @@
       <p class="empty" id="board-empty" hidden>the board is empty — create a campaign and yours serves first.</p>
     </section>
 
-    <section class="panel">
-      <h2>my campaigns</h2>
-      <p class="hint" id="mine-hint">campaigns created while signed in follow your wallet — manage them from any browser. tap a campaign to manage it.</p>
-      <div id="mine"></div>
+    <section class="panel" id="market-panel">
+      <h2>market</h2>
+      <div class="market-facts" id="market-facts">loading…</div>
     </section>
   </main>
+
+  <dialog id="fullboard-dialog" class="fullboard">
+    <div class="fullboard-head">
+      <div class="fullboard-title">
+        <span class="logo" aria-hidden="true">▮▯▮</span>
+        <div>
+          <h3>live auction board</h3>
+          <p class="fullboard-sub" id="fullboard-sub">the line under every AI coding agent · settled in USDC over HTTP 402</p>
+        </div>
+      </div>
+      <div class="fullboard-actions">
+        <button id="fullboard-outbid" class="primary" type="button">outbid the top line</button>
+        <button class="icon-btn" type="button" data-close aria-label="exit full-screen">✕</button>
+      </div>
+    </div>
+    <table id="fullboard-table" class="fullboard-table">
+      <thead>
+        <tr><th>#</th><th>campaign</th><th>advertiser</th><th>bid / block</th><th>remaining</th><th></th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <p class="empty" id="fullboard-empty" hidden>the board is open — be the first to bid and your line serves under every agent.</p>
+    <p class="fullboard-foot" id="fullboard-foot"></p>
+  </dialog>
+
+  <dialog id="pick-dialog">
+    <div class="dialog-head">
+      <h3>pick a campaign to outbid with</h3>
+      <button class="icon-btn" type="button" data-close aria-label="close">✕</button>
+    </div>
+    <p class="hint" id="pick-sub"></p>
+    <div id="pick-list"></div>
+  </dialog>
 
   <dialog id="create-dialog">
     <div class="dialog-head">

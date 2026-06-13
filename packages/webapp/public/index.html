@@ -51,6 +51,7 @@
         <b translate="no">codevertise</b>
       </a>
       <nav class="nav" aria-label="primary">
+        <a href="#board-preview" class="label-hide">live board</a>
         <a href="#advertisers" class="label-hide">advertisers</a>
         <a href="#developers" class="label-hide">developers</a>
         <a href="#agents" class="label-hide">agents</a>
@@ -82,6 +83,31 @@
         </div>
       </div>
     </header>
+
+    <!-- ───────────── live auction board preview ───────────── -->
+    <section id="board-preview">
+      <div class="wrap">
+        <div class="section-head">
+          <h3>the live auction board</h3>
+          <p>Who's renting the line right now. Watch it full-screen and outbid the top line with a single click — a free wallet signature is all it takes.</p>
+        </div>
+        <div class="board-card">
+          <table class="board-table" id="landing-board">
+            <thead>
+              <tr><th>#</th><th>campaign</th><th>advertiser</th><th>bid / block</th><th></th></tr>
+            </thead>
+            <tbody>
+              <tr><td colspan="5" class="board-loading">loading the live board…</td></tr>
+            </tbody>
+          </table>
+          <p class="board-empty" id="landing-board-empty" hidden>The board is open — be the first to bid and your line serves under every agent.</p>
+        </div>
+        <div class="board-cta">
+          <a class="btn btn-primary" href="/console.html#board">Watch the board full-screen →</a>
+          <span class="board-cta-note">opens the spectator view — outbid from there</span>
+        </div>
+      </div>
+    </section>
 
     <!-- ───────────── who it's for ───────────── -->
     <section id="who">
@@ -258,6 +284,42 @@ curl -X POST "$API/v1/fund?campaign=$ID&amp;blocks=2"
           if (badge) badge.textContent = `${rail.rail} · ${rail.asset} · ${rail.mode}`;
         }
       } catch {}
+    })();
+
+    // Live auction board preview — a read-only snapshot of /v1/auction. The
+    // console (console.html#board) is where you actually outbid.
+    (async () => {
+      const fmt = (micro) => `$${(Number(micro) / 1_000_000).toFixed(2)}`;
+      const escHtml = (s) => {
+        const d = document.createElement("div");
+        d.textContent = s;
+        return d.innerHTML;
+      };
+      const tbody = document.querySelector("#landing-board tbody");
+      const empty = document.getElementById("landing-board-empty");
+      const render = async () => {
+        try {
+          const r = await fetch("/v1/auction");
+          if (!r.ok) return;
+          const board = (await r.json()).board ?? [];
+          empty.hidden = board.length > 0;
+          document.getElementById("landing-board").style.display = board.length ? "" : "none";
+          tbody.innerHTML = board
+            .slice(0, 8)
+            .map(
+              (b) => `<tr>
+                <td data-l="#">${b.rank}</td>
+                <td data-l="campaign" class="mono">${escHtml(b.message)}</td>
+                <td data-l="advertiser" class="mono">${escHtml(b.advertiser)}</td>
+                <td data-l="bid / block" class="mono">${fmt(b.bidPerBlockMicro)}</td>
+                <td data-l="" class="cell-serving">${b.serving ? '<span class="serving">● serving</span>' : ""}</td>
+              </tr>`,
+            )
+            .join("");
+        } catch {}
+      };
+      await render();
+      setInterval(render, 5000);
     })();
   </script>
 </body>
