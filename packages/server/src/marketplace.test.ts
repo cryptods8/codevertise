@@ -74,8 +74,10 @@ describe("auction", () => {
   });
 
   it("serving cycles the whole pool, weighted by bid", () => {
-    const a = fundedCampaign(m, 3, 100); // weight 3
-    const b = fundedCampaign(m, 1, 100); // weight 1
+    // b enters the empty pool at $1; a then outbids it to join. Once both are
+    // admitted, being outbid never drops b — the pool rotates, weighted by bid.
+    const b = fundedCampaign(m, 1, 100); // weight 1, admitted into an empty pool
+    const a = fundedCampaign(m, 3, 100); // weight 3, outbids b to join
     const served: Record<string, number> = { [a.id]: 0, [b.id]: 0 };
     for (let i = 0; i < 4; i++) served[m.pickServe()!.id]++;
     // 3:1 share over a full cycle — and the lower bid still gets served.
@@ -84,11 +86,87 @@ describe("auction", () => {
   });
 
   it("an explicit pause is the only thing that drops an active campaign from serving", () => {
-    const a = fundedCampaign(m, 3, 100);
-    const b = fundedCampaign(m, 1, 100);
+    const b = fundedCampaign(m, 1, 100); // admitted into an empty pool
+    const a = fundedCampaign(m, 3, 100); // outbids b to join
     m.setCampaignStatus(b.id, "paused");
     expect(m.eligible().map((c) => c.id)).toEqual([a.id]);
     expect(m.pickServe()?.id).toBe(a.id);
+  });
+});
+
+describe("admission gate", () => {
+  let m: Marketplace;
+  beforeEach(() => (m = makeMarket()));
+
+  it("the first funded bid serves — there is no leader to outbid", () => {
+    const a = fundedCampaign(m, 2, 10);
+    expect(m.eligible().map((c) => c.id)).toEqual([a.id]);
+    expect(m.winner()?.id).toBe(a.id);
+  });
+
+  it("a funded bid that does not outbid the leader never serves", () => {
+    const top = fundedCampaign(m, 5, 10);
+    const weak = fundedCampaign(m, 2, 10); // funded, but $2 < $5: not admitted
+    expect(m.eligible().map((c) => c.id)).toEqual([top.id]);
+    expect(m.auctionState().find((b) => b.campaignId === weak.id)?.serving).toBe(false);
+    // The weak bid never wins a serve slot, however many times we rotate.
+    for (let i = 0; i < 5; i++) expect(m.pickServe()?.id).toBe(top.id);
+  });
+
+  it("an equal bid does not clear the bar — you must strictly outbid", () => {
+    const first = fundedCampaign(m, 3, 10);
+    const tie = fundedCampaign(m, 3, 10); // $3 == $3: not an overbid
+    expect(m.eligible().map((c) => c.id)).toEqual([first.id]);
+    expect(m.auctionState().find((b) => b.campaignId === tie.id)?.serving).toBe(false);
+  });
+
+  it("outbidding the leader admits the challenger and keeps the incumbent", () => {
+    const incumbent = fundedCampaign(m, 2, 10);
+    const challenger = fundedCampaign(m, 5, 10); // outbids $2 → joins
+    // Both serve; the incumbent is retained even though it is now outbid.
+    expect(m.eligible().map((c) => c.id)).toEqual([challenger.id, incumbent.id]);
+    expect(m.auctionState().every((b) => b.serving)).toBe(true);
+  });
+
+  it("funding is not enough — a raise past the leader is what lets you in", () => {
+    const top = fundedCampaign(m, 5, 10);
+    const c = fundedCampaign(m, 2, 10); // funded but below the leader
+    expect(m.eligible().map((x) => x.id)).toEqual([top.id]);
+    m.raiseBid(c.id, 6 * USD); // now outbids $5
+    expect(m.eligible().map((x) => x.id)).toEqual([c.id, top.id]);
+  });
+
+  it("an unfunded overbid does not serve — both gates must pass", () => {
+    const top = fundedCampaign(m, 2, 10);
+    const c = m.createCampaign({
+      advertiser: "broke",
+      message: "high bid, no budget",
+      url: "https://e.com",
+      bidPerBlockMicro: 9 * USD,
+    });
+    expect(m.eligible().map((x) => x.id)).toEqual([top.id]);
+    expect(m.getCampaign(c.id)!.activated_at).toBeNull();
+  });
+
+  it("a campaign exhausted to zero leaves the pool and must re-qualify to return", () => {
+    const c = fundedCampaign(m, 6, 6); // admitted into an empty pool, budget exactly $6
+    const leader = fundedCampaign(m, 9, 10); // outbids $6 → joins as leader
+    expect(m.eligible().map((x) => x.id)).toContain(c.id);
+
+    // Drain c's whole budget with clicks ($0.30 each at $6/block).
+    for (let i = 0; i < 20; i++) {
+      m.recordEvent({ key: `d${i}`, type: "click", campaignId: c.id, publisher: "0xpub", surface: "s" });
+    }
+    expect(m.remainingMicro(m.getCampaign(c.id)!)).toBe(0);
+    expect(m.getCampaign(c.id)!.activated_at).toBeNull(); // dropped from the pool
+    expect(m.eligible().map((x) => x.id)).toEqual([leader.id]);
+
+    // Re-funding alone does NOT bring it back — $6 no longer outbids the $9 leader.
+    m.fundCampaign({ campaignId: c.id, payer: "adv", amountMicro: 10 * USD, rail: "mock" });
+    expect(m.eligible().map((x) => x.id)).toEqual([leader.id]);
+    // It has to win its slot again, by outbidding the current leader.
+    m.raiseBid(c.id, 10 * USD);
+    expect(m.eligible().map((x) => x.id)).toContain(c.id);
   });
 });
 

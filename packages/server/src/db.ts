@@ -15,6 +15,16 @@ export interface Campaign {
   /** cancelled is terminal: the campaign never serves or accepts funds again. */
   status: "active" | "paused" | "cancelled";
   created_at: number;
+  /**
+   * When the campaign was admitted into the serving pool, or null if it never
+   * has been. Admission is gated on the auction: a campaign starts serving only
+   * once it is funded AND its bid outbids the current top serving campaign (an
+   * empty pool admits the first funded bid). Once set it persists through being
+   * outbid and through pause/resume — only running out of budget clears it, so
+   * a re-funded campaign must outbid the leader again to re-enter. status alone
+   * no longer means "serving"; this column is the gate.
+   */
+  activated_at: number | null;
   /** sha256 of the campaign's manage key (issued once at creation); null for
    *  house/legacy campaigns, which then cannot be managed over HTTP at all. */
   manage_key_hash: string | null;
@@ -107,7 +117,8 @@ export function openDb(path: string): Database.Database {
       status TEXT NOT NULL DEFAULT 'active',
       created_at INTEGER NOT NULL,
       manage_key_hash TEXT,
-      owner_wallet TEXT
+      owner_wallet TEXT,
+      activated_at INTEGER
     );
     CREATE TABLE IF NOT EXISTS advertisers (
       wallet TEXT PRIMARY KEY,
@@ -176,6 +187,15 @@ export function openDb(path: string): Database.Database {
   }
   if (!campaignCols.some((c) => c.name === "owner_wallet")) {
     db.exec(`ALTER TABLE campaigns ADD COLUMN owner_wallet TEXT`);
+  }
+  if (!campaignCols.some((c) => c.name === "activated_at")) {
+    db.exec(`ALTER TABLE campaigns ADD COLUMN activated_at INTEGER`);
+    // Grandfather campaigns that were already serving under the old "every
+    // funded active bid serves" rule: they stay active per the retention rules.
+    // The new admission gate only applies to campaigns that join from here on.
+    db.exec(
+      `UPDATE campaigns SET activated_at = created_at WHERE status = 'active' AND activated_at IS NULL`,
+    );
   }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_campaigns_owner ON campaigns(owner_wallet)`);
   const payoutCols = db.prepare(`PRAGMA table_info(payouts)`).all() as { name: string }[];

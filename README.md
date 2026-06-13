@@ -20,7 +20,8 @@ Codevertise is a block-auction marketplace for that line, with crypto-native pay
 |---|---|
 | Ad unit | 1 block = 1,000 five-second impressions |
 | Auction | English ascending, min bid $1.00/block, min raise $0.50 |
-| Serving | Every funded active campaign serves, rotating per recipient (smooth weighted round-robin); a $5 bid is served ~5× as often as a $1 bid. Bids buy share, not exclusivity — a campaign leaves serving only on explicit pause/cancel or when its budget runs out, never for being outbid. Unfunded bids never serve |
+| Admission | A campaign only **enters** the serving pool once it is funded **and** outbids the current top serving campaign (the first funded bid enters an empty pool unopposed). Funding alone is not enough; an unfunded overbid is not enough — both gates must pass. A campaign drained to zero leaves the pool and must outbid the leader again to return |
+| Serving | Once admitted, a campaign keeps serving, rotating per recipient (smooth weighted round-robin); a $5 bid is served ~5× as often as a $1 bid. Bids buy share, not exclusivity — an admitted campaign leaves serving only on explicit pause/cancel or when its budget runs out, **never for being outbid by a later entrant** |
 | Clicks | Billed at 50× the impression rate |
 | Publisher share | 40% of spend by default (operator-set via `PUBLISHER_SHARE`), credited per event to the publisher's wallet |
 | Advertiser privacy | Wallets never appear on public surfaces; advertisers pick an optional public label for the board |

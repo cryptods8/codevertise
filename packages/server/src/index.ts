@@ -53,9 +53,11 @@ function seedHouseAds(m: Marketplace) {
       bidUsd: 1.0,
     },
     {
+      // Seeded a step above the first so it clears the admission gate (a new
+      // campaign must outbid the leader to start serving) and both go live.
       message: "Your agent can buy this slot itself: POST /v1/fund, pay the 402, done",
       url: "https://github.com/codevertise",
-      bidUsd: 1.0,
+      bidUsd: 1.5,
     },
   ];
   for (const s of seeds) {

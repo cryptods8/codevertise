@@ -76,11 +76,14 @@ export class Marketplace {
       created_at: Date.now(),
       manage_key_hash: sha256Hex(manageKey),
       owner_wallet: input.ownerWallet ?? null,
+      // Not serving yet: a campaign only joins the pool once it is funded and
+      // outbids the current leader (see tryActivate, called on fund/raise).
+      activated_at: null,
     };
     this.db
       .prepare(
-        `INSERT INTO campaigns (id, advertiser, label, message, url, bid_per_block_micro, budget_micro, spent_micro, refunded_micro, status, created_at, manage_key_hash, owner_wallet)
-         VALUES (@id, @advertiser, @label, @message, @url, @bid_per_block_micro, @budget_micro, @spent_micro, @refunded_micro, @status, @created_at, @manage_key_hash, @owner_wallet)`,
+        `INSERT INTO campaigns (id, advertiser, label, message, url, bid_per_block_micro, budget_micro, spent_micro, refunded_micro, status, created_at, manage_key_hash, owner_wallet, activated_at)
+         VALUES (@id, @advertiser, @label, @message, @url, @bid_per_block_micro, @budget_micro, @spent_micro, @refunded_micro, @status, @created_at, @manage_key_hash, @owner_wallet, @activated_at)`,
       )
       .run(campaign);
     return Object.assign(campaign, { manageKey });
@@ -190,6 +193,9 @@ export class Marketplace {
     this.db
       .prepare(`UPDATE campaigns SET bid_per_block_micro = ? WHERE id = ?`)
       .run(newBidMicro, id);
+    // A funded-but-not-yet-serving campaign can raise its way past the leader
+    // and into the pool. An already-serving one just keeps its place.
+    this.tryActivate(this.mustGetCampaign(id));
     return this.mustGetCampaign(id);
   }
 
@@ -226,6 +232,10 @@ export class Marketplace {
       insert.run(payment);
       credit.run(input.amountMicro, c.id);
     })();
+    // Funding is the moment a campaign can enter the auction: admit it if it now
+    // outbids the leader (or the pool is empty). If it can't, it stays funded
+    // but unserved until it raises past the top — being funded is not enough.
+    this.tryActivate(this.mustGetCampaign(c.id));
     return { campaign: this.mustGetCampaign(c.id), payment };
   }
 
@@ -242,20 +252,54 @@ export class Marketplace {
   }
 
   /**
-   * The live serving pool: every active campaign that can still afford at
-   * least one impression, ranked by bid (ties broken by age). Being outbid no
-   * longer drops a campaign out — only an explicit pause/cancel or running out
-   * of budget does. The whole pool serves; bids decide share, not exclusivity.
+   * The live serving pool: every campaign that was *admitted* into the auction
+   * (activated_at set — it outbid the leader and was funded), is still active,
+   * and can afford at least one more impression, ranked by bid (ties broken by
+   * age). Admission is the entry gate; once in, being outbid no longer drops a
+   * campaign — only an explicit pause/cancel or running out of budget does. The
+   * whole admitted pool serves; bids decide share, not exclusivity.
    */
   eligible(): Campaign[] {
     const rows = this.db
       .prepare(
         `SELECT * FROM campaigns
-         WHERE status = 'active' AND budget_micro - spent_micro > 0
+         WHERE status = 'active' AND activated_at IS NOT NULL AND budget_micro - spent_micro > 0
          ORDER BY bid_per_block_micro DESC, created_at ASC`,
       )
       .all() as Campaign[];
     return rows.filter((c) => this.remainingMicro(c) >= this.impressionCostMicro(c));
+  }
+
+  /**
+   * The highest bid currently in the serving pool, ignoring one campaign (the
+   * admission candidate). 0 when the pool is otherwise empty — so the first
+   * funded bid always clears the bar.
+   */
+  private topServingBidMicro(excludeId: string): number {
+    let top = 0;
+    for (const c of this.eligible()) {
+      if (c.id === excludeId) continue;
+      if (c.bid_per_block_micro > top) top = c.bid_per_block_micro;
+    }
+    return top;
+  }
+
+  /**
+   * Admit a campaign into the serving pool if it now qualifies: active, funded
+   * (can afford an impression), not already serving, and outbidding the current
+   * top serving campaign. This is the auction's entry gate — funding or raising
+   * is what triggers it. Already-admitted campaigns are never displaced by a new
+   * entrant; they leave only via pause/cancel/budget-exhaustion. Returns true if
+   * the campaign just became active.
+   */
+  private tryActivate(c: Campaign): boolean {
+    if (c.status !== "active" || c.activated_at) return false;
+    if (this.remainingMicro(c) < this.impressionCostMicro(c)) return false; // unfunded: never serves
+    if (c.bid_per_block_micro <= this.topServingBidMicro(c.id)) return false; // didn't outbid the leader
+    const now = Date.now();
+    this.db.prepare(`UPDATE campaigns SET activated_at = ? WHERE id = ?`).run(now, c.id);
+    c.activated_at = now;
+    return true;
   }
 
   /**
@@ -303,7 +347,8 @@ export class Marketplace {
   /**
    * Public auction board: ranked queue with remaining budget. Wallets stay
    * private — the board identifies advertisers by their chosen label only.
-   * Every funded active campaign is `serving` now, since the pool rotates.
+   * `serving` reflects the admission gate: a funded campaign that hasn't yet
+   * outbid the leader appears on the board but with serving=false.
    */
   auctionState() {
     const rows = this.db
@@ -367,6 +412,10 @@ export class Marketplace {
        ON CONFLICT(wallet) DO UPDATE SET earned_micro = earned_micro + excluded.earned_micro`,
     );
 
+    const dropFromPool = this.db.prepare(
+      `UPDATE campaigns SET activated_at = NULL WHERE id = ?`,
+    );
+
     let inserted = false;
     this.db.transaction(() => {
       const res = insertEvent.run(event);
@@ -374,6 +423,12 @@ export class Marketplace {
       inserted = true;
       debit.run(cost, c.id);
       credit.run(input.publisher, publisherMicro);
+      // If this debit exhausted the budget, the campaign leaves the pool. It
+      // is no longer "a campaign that was active" — re-funding it later must
+      // outbid the leader again to re-enter, same as any new entrant.
+      if (this.remainingMicro(this.mustGetCampaign(c.id)) < this.impressionCostMicro(c)) {
+        dropFromPool.run(c.id);
+      }
     })();
     return inserted ? event : undefined;
   }
