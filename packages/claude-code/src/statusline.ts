@@ -94,7 +94,7 @@ function main(): void {
   if (state.ad) {
     // OSC 8 hyperlink where the terminal supports it; plain text elsewhere.
     const link = `\x1b]8;;${state.ad.url}\x1b\\${state.ad.message}\x1b]8;;\x1b\\`;
-    parts.push(`${DIM}[sponsored]${RESET} ${CYAN}${link}${RESET}`);
+    parts.push(`${DIM}[ad]${RESET} ${CYAN}${link}${RESET}`);
   } else {
     parts.push(`${DIM}codevertise: no fill${RESET}`);
   }

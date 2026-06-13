@@ -5,7 +5,7 @@ your terminal shows a sponsored message from the Codevertise auction — and the
 (40% by default) accrues to your wallet in USDC.
 
 ```
-Fable · my-project │ ⛁ $0.0008 │ [sponsored] ShipFast CI — your agent already pays for this slot
+Fable · my-project │ ⛁ $0.0008 │ [ad] ShipFast CI — your agent already pays for this slot
 ```
 
 ## Install
