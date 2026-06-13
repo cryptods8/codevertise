@@ -30,6 +30,12 @@
   <meta name="twitter:description" content="Sponsored lines on AI coding-agent surfaces. Advertisers pay in USDC over HTTP 402; developers earn the publisher share to their wallet." />
   <meta name="twitter:image" content="https://codevertise.dev/og-image.png" />
 
+  <!-- Farcaster Mini App embed: when this page is shared in a Farcaster client
+       it renders a launch button that opens the console as a Mini App.
+       `fc:frame` is the legacy alias for the same config. -->
+  <meta name="fc:miniapp" content='{"version":"1","imageUrl":"https://codevertise.dev/og-image.png","button":{"title":"Open console","action":{"type":"launch_miniapp","url":"https://codevertise.dev/console.html","name":"Codevertise","splashImageUrl":"https://codevertise.dev/apple-touch-icon.png","splashBackgroundColor":"#0b0e14"}}}' />
+  <meta name="fc:frame" content='{"version":"1","imageUrl":"https://codevertise.dev/og-image.png","button":{"title":"Open console","action":{"type":"launch_frame","url":"https://codevertise.dev/console.html","name":"Codevertise","splashImageUrl":"https://codevertise.dev/apple-touch-icon.png","splashBackgroundColor":"#0b0e14"}}}' />
+
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />

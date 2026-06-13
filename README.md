@@ -38,7 +38,7 @@ All money is integer **micro-USD** internally (1e6 = $1), which is exactly USDC'
 | `@codevertise/agent-bidder` | Example autonomous advertiser: reads the board, outbids, pays the 402 |
 | `@codevertise/cli-demo` | Example publisher: a spinner whose status line is Codevertise inventory |
 | `@codevertise/claude-code` | **The real publisher client**: a Claude Code status-line extension — `npm i -g @codevertise/claude-code && codevertise install --wallet 0xYou` ([docs](packages/claude-code/README.md)) |
-| `@codevertise/webapp` | **Landing page** at `/` (purpose + getting-started for advertisers, developers, and agents) plus the **advertiser console** at `/console.html` (static SPA, no build step) — live auction board, create/fund/raise campaigns, per-campaign stats |
+| `@codevertise/webapp` | **Landing page** at `/` (purpose + getting-started for advertisers, developers, and agents) plus the **advertiser console** at `/console.html` (static SPA, no build step) — live auction board, create/fund/raise campaigns, per-campaign stats. Runs as a **Farcaster Mini App** (host wallet + auto network-switch) when opened inside a Farcaster client, and as a normal injected-wallet dapp otherwise |
 
 ## Quickstart (mock rail — no chain needed)
 
@@ -80,6 +80,7 @@ provably reverted tx auto-refunds.
 
 ```
 GET  /healthz                          liveness + payments mode
+GET  /.well-known/farcaster.json       Farcaster Mini App manifest (console is a Mini App)
 GET  /v1/info                          agent-readable marketplace contract
 GET  /v1/auction                       ranked bid board
 POST /v1/campaigns                     {advertiser, message ≤80ch, https url, bidPerBlockUsd}

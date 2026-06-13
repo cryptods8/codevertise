@@ -5,6 +5,9 @@ export interface Config {
   paymentsMode: "mock" | "x402";
   /** CAIP-2 network for x402 payments. Base Sepolia by default. */
   network: string;
+  /** Public origin the app is served from (no trailing slash). Used to build
+   *  absolute URLs in the Farcaster Mini App manifest. */
+  publicUrl: string;
   /** Address that receives advertiser deposits (the marketplace treasury). */
   payTo: string;
   facilitatorUrl: string;
@@ -93,6 +96,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dbPath: env.DB_PATH ?? "codevertise.db",
     paymentsMode: mode,
     network: env.X402_NETWORK ?? "eip155:84532",
+    publicUrl: (env.PUBLIC_URL ?? "https://codevertise.dev").replace(/\/+$/, ""),
     payTo,
     facilitatorUrl: env.FACILITATOR_URL ?? "https://facilitator.x402.org",
     payoutPrivateKey,

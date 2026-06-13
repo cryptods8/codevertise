@@ -654,6 +654,48 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     res.json({ payout: market.getPayout(payout.id) });
   });
 
+  // ---- Farcaster Mini App manifest ----
+  // Lets Farcaster clients discover and embed the console as a Mini App. The
+  // console (console.html) is the launch surface; it speaks the Mini App SDK
+  // and uses the host wallet when run inside a Farcaster client. Domain
+  // ownership is proved by FARCASTER_ACCOUNT_ASSOCIATION (a JSON object signed
+  // for the deployed domain via the Farcaster manifest tool); omitted when
+  // unset so the manifest still serves for local/preview use.
+  app.get("/.well-known/farcaster.json", (_req, res) => {
+    const base = cfg.publicUrl;
+    const miniapp = {
+      version: "1",
+      name: "Codevertise",
+      iconUrl: `${base}/apple-touch-icon.png`,
+      homeUrl: `${base}/console.html`,
+      imageUrl: `${base}/og-image.png`,
+      buttonTitle: "Open console",
+      splashImageUrl: `${base}/apple-touch-icon.png`,
+      splashBackgroundColor: "#0b0e14",
+      subtitle: "Rent the AI agent's status line",
+      description:
+        "Fund sponsored lines on AI coding-agent surfaces, paid in USDC over HTTP 402.",
+      primaryCategory: "finance",
+      tags: ["ads", "usdc", "x402", "base", "agents"],
+    };
+    let accountAssociation: unknown;
+    if (process.env.FARCASTER_ACCOUNT_ASSOCIATION) {
+      try {
+        accountAssociation = JSON.parse(process.env.FARCASTER_ACCOUNT_ASSOCIATION);
+      } catch {
+        // Malformed env: serve the manifest without the (invalid) association
+        // rather than 500. The domain just won't verify until it's fixed.
+      }
+    }
+    res.json({
+      ...(accountAssociation ? { accountAssociation } : {}),
+      // `miniapp` is the current key; `frame` is the legacy alias some clients
+      // still read. Both carry the same config.
+      miniapp,
+      frame: miniapp,
+    });
+  });
+
   // ---- advertiser webapp (static, no build step) ----
   const webappDir = fileURLToPath(new URL("../../webapp/public", import.meta.url));
   if (existsSync(webappDir)) app.use(express.static(webappDir));

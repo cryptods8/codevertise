@@ -5,6 +5,7 @@ import {
   parsePaymentRequired,
   parsePaymentResponse,
 } from "./x402-pay.js";
+import { initWallet, provider, ensureChain } from "./wallet.js";
 
 const $ = (sel) => document.querySelector(sel);
 const USD = 1_000_000;
@@ -18,7 +19,23 @@ let board = [];
 
 let session = null; // { wallet, label, settingsSet } or null
 
-const eth = () => window.ethereum;
+// The active wallet: the Farcaster Mini App host wallet when the console runs
+// inside a Farcaster client, otherwise the injected browser wallet.
+const eth = () => provider();
+
+// The marketplace's settlement network (CAIP-2), once /v1/info has loaded.
+const payNetwork = () => info?.paymentRails?.primary?.network;
+
+// Put the connected wallet on the marketplace's network before we ask it to
+// sign. Best-effort: a failure here is surfaced but never silently wrong — the
+// signed authorization carries the chainId regardless.
+async function ensurePayChain() {
+  const network = payNetwork();
+  if (!network) return;
+  await ensureChain(eth(), network, {
+    onSwitching: (name) => toast(`switch your wallet to ${name} — confirm the prompt`),
+  });
+}
 
 async function loadSession() {
   try {
@@ -42,6 +59,9 @@ async function signIn() {
   try {
     const [account] = await eth().request({ method: "eth_requestAccounts" });
     if (!account) return;
+    // Land on the marketplace's chain so the SIWE chain id matches and the
+    // wallet is ready to pay without a second switch.
+    await ensurePayChain().catch(() => {});
     const { nonce, message } = (await api(`/v1/auth/nonce?address=${account}`)).body;
     // personal_sign takes the message hex-encoded; the wallet shows it as text.
     const hex =
@@ -675,6 +695,8 @@ async function fund(id, blocks) {
     // connected wallet (gasless — the facilitator submits it on-chain).
     const account = await signingAccount();
     if (!account) return;
+    // The wallet must be on the settlement chain before signing.
+    await ensurePayChain();
     const { header, accept } = await createPaymentSignatureHeader({
       paymentRequired,
       from: account,
@@ -734,7 +756,14 @@ async function refreshAll() {
   }
 }
 
-loadSession()
+// Resolve the Farcaster Mini App host wallet (and dismiss its splash) before
+// the first render; never blocks boot if the SDK is unreachable.
+initWallet()
+  .then(({ inMiniApp }) => {
+    if (inMiniApp) document.documentElement.classList.add("in-miniapp");
+  })
+  .catch(() => {})
+  .then(loadSession)
   .then(loadInfo)
   .then(refreshAll)
   .catch((err) => toast(`marketplace unreachable: ${err.message}`, "err"));

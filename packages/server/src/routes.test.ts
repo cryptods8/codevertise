@@ -334,6 +334,19 @@ describe("ops surface", () => {
     const res = await fetch(`${h.base}/v1/publishers/not-a-wallet/payouts`, { method: "POST" });
     expect(res.status).toBe(400);
   });
+
+  it("serves a Farcaster Mini App manifest with absolute URLs from PUBLIC_URL", async () => {
+    const h = await start({ publicUrl: "https://ads.example" });
+    const res = await fetch(`${h.base}/.well-known/farcaster.json`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // `miniapp` is current; `frame` is the legacy alias — both present and equal.
+    expect(body.miniapp).toEqual(body.frame);
+    expect(body.miniapp.homeUrl).toBe("https://ads.example/console.html");
+    expect(body.miniapp.iconUrl).toBe("https://ads.example/apple-touch-icon.png");
+    // No FARCASTER_ACCOUNT_ASSOCIATION env in tests → key omitted, not null.
+    expect("accountAssociation" in body).toBe(false);
+  });
 });
 
 describe("campaign cancel & withdraw over HTTP", () => {
