@@ -12,8 +12,7 @@ function sha256Hex(s: string): string {
 /**
  * The Codevertise marketplace core: an English ascending auction over ad
  * "blocks" (1 block = `blockImpressions` five-second impressions), funded in
- * USDC and settled to an internal micro-USD ledger. Kickbacks.ai economics,
- * crypto rails.
+ * USDC and settled to an internal micro-USD ledger.
  */
 export class Marketplace {
   private secret?: Buffer;

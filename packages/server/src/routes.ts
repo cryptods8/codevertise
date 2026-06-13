@@ -15,6 +15,28 @@ import { signToken, verifyToken, type ServeToken } from "./tokens.js";
 
 const RaiseBid = z.object({ bidPerBlockUsd: z.number().positive() });
 
+// Farcaster domain-ownership proof for the Mini App manifest, signed for
+// codevertise.dev. Override with FARCASTER_ACCOUNT_ASSOCIATION (the same JSON
+// shape) when serving from a different domain.
+const DEFAULT_ACCOUNT_ASSOCIATION = {
+  header:
+    "eyJmaWQiOjExMTI0LCJ0eXBlIjoiYXV0aCIsImtleSI6IjB4YzI5MjZBMzlkMGQ4OGQ0YzFCMjI3RGVCOTMzMDIyRjE0OTJlODE4QyJ9",
+  payload: "eyJkb21haW4iOiJjb2RldmVydGlzZS5kZXYifQ",
+  signature: "JTBgqjzTQTgOhc+HWZQjlYA54vdFOu3kLNfefoqP4dUYK2P+12rsbtWcZ9gsyfBX5aKwZnfNWWAG5OSMJriVvhs=",
+};
+
+function accountAssociation(): unknown {
+  const env = process.env.FARCASTER_ACCOUNT_ASSOCIATION;
+  if (env) {
+    try {
+      return JSON.parse(env);
+    } catch {
+      // Malformed override: fall back to the baked-in proof rather than 500.
+    }
+  }
+  return DEFAULT_ACCOUNT_ASSOCIATION;
+}
+
 // An event no longer carries the campaign/publisher/wallet — those are read
 // from the signed serve token, so a caller can only bill what it was served.
 const Event = z.object({
@@ -657,10 +679,7 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
   // ---- Farcaster Mini App manifest ----
   // Lets Farcaster clients discover and embed the console as a Mini App. The
   // console (console.html) is the launch surface; it speaks the Mini App SDK
-  // and uses the host wallet when run inside a Farcaster client. Domain
-  // ownership is proved by FARCASTER_ACCOUNT_ASSOCIATION (a JSON object signed
-  // for the deployed domain via the Farcaster manifest tool); omitted when
-  // unset so the manifest still serves for local/preview use.
+  // and uses the host wallet when run inside a Farcaster client.
   app.get("/.well-known/farcaster.json", (_req, res) => {
     const base = cfg.publicUrl;
     const miniapp = {
@@ -668,27 +687,23 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
       name: "Codevertise",
       iconUrl: `${base}/apple-touch-icon.png`,
       homeUrl: `${base}/console.html`,
-      imageUrl: `${base}/og-image.png`,
+      // Embed/preview image must be 3:2 (1200x800) — a dedicated card, not the
+      // 1.91:1 OpenGraph image.
+      imageUrl: `${base}/miniapp-preview.png`,
       buttonTitle: "Open console",
       splashImageUrl: `${base}/apple-touch-icon.png`,
       splashBackgroundColor: "#0b0e14",
-      subtitle: "Rent the AI agent's status line",
+      subtitle: "The AI agent's status line", // ≤30 chars (Farcaster limit)
       description:
         "Fund sponsored lines on AI coding-agent surfaces, paid in USDC over HTTP 402.",
       primaryCategory: "finance",
       tags: ["ads", "usdc", "x402", "base", "agents"],
     };
-    let accountAssociation: unknown;
-    if (process.env.FARCASTER_ACCOUNT_ASSOCIATION) {
-      try {
-        accountAssociation = JSON.parse(process.env.FARCASTER_ACCOUNT_ASSOCIATION);
-      } catch {
-        // Malformed env: serve the manifest without the (invalid) association
-        // rather than 500. The domain just won't verify until it's fixed.
-      }
-    }
     res.json({
-      ...(accountAssociation ? { accountAssociation } : {}),
+      // Domain-ownership proof. Defaults to the signed proof for
+      // codevertise.dev; override with FARCASTER_ACCOUNT_ASSOCIATION (JSON) when
+      // serving another domain.
+      accountAssociation: accountAssociation(),
       // `miniapp` is the current key; `frame` is the legacy alias some clients
       // still read. Both carry the same config.
       miniapp,

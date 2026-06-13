@@ -344,8 +344,16 @@ describe("ops surface", () => {
     expect(body.miniapp).toEqual(body.frame);
     expect(body.miniapp.homeUrl).toBe("https://ads.example/console.html");
     expect(body.miniapp.iconUrl).toBe("https://ads.example/apple-touch-icon.png");
-    // No FARCASTER_ACCOUNT_ASSOCIATION env in tests → key omitted, not null.
-    expect("accountAssociation" in body).toBe(false);
+    // Embed image is the dedicated 3:2 card, not the OpenGraph image.
+    expect(body.miniapp.imageUrl).toBe("https://ads.example/miniapp-preview.png");
+    // Farcaster caps subtitle at 30 chars.
+    expect(body.miniapp.subtitle.length).toBeLessThanOrEqual(30);
+    // Domain-ownership proof is always present (baked-in default, env-overridable).
+    expect(body.accountAssociation).toMatchObject({
+      header: expect.any(String),
+      payload: expect.any(String),
+      signature: expect.any(String),
+    });
   });
 });
 
