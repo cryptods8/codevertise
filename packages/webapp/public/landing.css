@@ -99,6 +99,8 @@ a, button { touch-action: manipulation; }
 .statusline-demo code { display: block; white-space: nowrap; font-size: 13.5px; color: var(--muted); }
 .statusline-demo .tag { color: var(--amber); }
 .statusline-demo .ad { color: var(--accent); }
+.statusline-demo a.ad { text-decoration: none; }
+.statusline-demo a.ad:hover { text-decoration: underline; }
 .statusline-demo .earn { color: var(--green); }
 
 /* ---- section scaffolding ---- */
