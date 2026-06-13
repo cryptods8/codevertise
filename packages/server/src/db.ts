@@ -42,6 +42,12 @@ export interface Advertiser {
   /** When account settings were last saved; null until the forced first-run
    *  settings pass completes. */
   settings_at: number | null;
+  /** Version identifier of the Terms the advertiser accepted by signing the
+   *  SIWE message (which references that version). Durable, per-wallet proof of
+   *  agreement; null for accounts predating consent capture. */
+  terms_version: string | null;
+  /** When the most recent Terms acceptance was recorded. */
+  terms_accepted_at: number | null;
 }
 
 export interface Session {
@@ -100,6 +106,27 @@ export interface Payout {
   created_at: number;
 }
 
+/** A notice-and-action report against hosted advertiser content (DSA Art. 16):
+ *  captured server-side so the operator has a durable, reviewable queue rather
+ *  than depending on an email inbox being watched. */
+export interface Report {
+  id: string;
+  /** The campaign complained of, when the reporter identified one. */
+  campaign_id: string | null;
+  /** Short category, e.g. "illegal" | "ip" | "fraud" | "malware" | "other". */
+  reason: string;
+  /** Free-text explanation / notice body. */
+  details: string;
+  /** Optional reporter contact (email or wallet) for follow-up. */
+  reporter: string | null;
+  /** open — awaiting review; actioned — content removed/restricted; dismissed. */
+  status: "open" | "actioned" | "dismissed";
+  created_at: number;
+  resolved_at: number | null;
+  /** Operator note recorded when the report was resolved. */
+  resolution: string | null;
+}
+
 export function openDb(path: string): Database.Database {
   const db = new Database(path);
   db.pragma("journal_mode = WAL");
@@ -124,7 +151,9 @@ export function openDb(path: string): Database.Database {
       wallet TEXT PRIMARY KEY,
       label TEXT,
       created_at INTEGER NOT NULL,
-      settings_at INTEGER
+      settings_at INTEGER,
+      terms_version TEXT,
+      terms_accepted_at INTEGER
     );
     CREATE TABLE IF NOT EXISTS sessions (
       token_hash TEXT PRIMARY KEY,
@@ -166,6 +195,17 @@ export function openDb(path: string): Database.Database {
       tx TEXT,
       created_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS reports (
+      id TEXT PRIMARY KEY,
+      campaign_id TEXT,
+      reason TEXT NOT NULL,
+      details TEXT NOT NULL,
+      reporter TEXT,
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at INTEGER NOT NULL,
+      resolved_at INTEGER,
+      resolution TEXT
+    );
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -174,6 +214,7 @@ export function openDb(path: string): Database.Database {
       ON campaigns(status, bid_per_block_micro DESC, created_at ASC);
     CREATE INDEX IF NOT EXISTS idx_events_campaign ON events(campaign_id);
     CREATE INDEX IF NOT EXISTS idx_events_publisher ON events(publisher);
+    CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at DESC);
   `);
   const campaignCols = db.prepare(`PRAGMA table_info(campaigns)`).all() as { name: string }[];
   if (!campaignCols.some((c) => c.name === "label")) {
@@ -198,6 +239,13 @@ export function openDb(path: string): Database.Database {
     );
   }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_campaigns_owner ON campaigns(owner_wallet)`);
+  const advertiserCols = db.prepare(`PRAGMA table_info(advertisers)`).all() as { name: string }[];
+  if (!advertiserCols.some((c) => c.name === "terms_version")) {
+    db.exec(`ALTER TABLE advertisers ADD COLUMN terms_version TEXT`);
+  }
+  if (!advertiserCols.some((c) => c.name === "terms_accepted_at")) {
+    db.exec(`ALTER TABLE advertisers ADD COLUMN terms_accepted_at INTEGER`);
+  }
   const payoutCols = db.prepare(`PRAGMA table_info(payouts)`).all() as { name: string }[];
   if (!payoutCols.some((c) => c.name === "kind")) {
     db.exec(`ALTER TABLE payouts ADD COLUMN kind TEXT NOT NULL DEFAULT 'earnings'`);

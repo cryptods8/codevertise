@@ -6,7 +6,7 @@ import { nanoid } from "nanoid";
 import { z } from "zod";
 import { AdvertiserAuth, SESSION_COOKIE, SESSION_TTL_MS } from "./auth.js";
 import { isEvmAddress, USD, usdToMicro, type Config } from "./config.js";
-import type { Advertiser, Campaign, Payout } from "./db.js";
+import type { Advertiser, Campaign, Payout, Report } from "./db.js";
 import { MarketError, type Marketplace } from "./marketplace.js";
 import { buildFundingPaywall, describePrice, fundingPriceMicro } from "./payments.js";
 import { executePayout, retryPayout } from "./payouts.js";
@@ -61,6 +61,8 @@ function accountView(adv: Advertiser) {
     wallet: adv.wallet,
     label: adv.label,
     settingsSet: adv.settings_at !== null,
+    termsVersion: adv.terms_version,
+    termsAcceptedAt: adv.terms_accepted_at,
   };
 }
 
@@ -223,11 +225,25 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
       },
       publisherShare: cfg.publisherShare,
       minPayoutUsd: cfg.minPayoutMicro / USD,
+      legal: {
+        version: cfg.legalVersion,
+        termsUrl: `${cfg.publicUrl}/terms.html`,
+        privacyUrl: `${cfg.publicUrl}/privacy.html`,
+        acceptableUseUrl: `${cfg.publicUrl}/terms.html#8`,
+        // DSA Art. 16 notice-and-action: report illegal/infringing content.
+        reportContent:
+          "POST /v1/reports {campaignId?, reason, details, reporter?} or email abuse@codevertise.dev",
+        // Programmatic/agent advertisers accept the Terms by using the API; the
+        // console binds human advertisers via the signed SIWE message.
+        acceptance:
+          "By accessing this API or funding a campaign you agree to the Terms of Service and Acceptable Use Policy at the URLs above. You are responsible for any agent you deploy.",
+      },
       howToBid: [
         "POST /v1/campaigns {advertiser, message, url, bidPerBlockUsd} — response includes your one-time manage key",
         "POST /v1/fund?campaign=<id>&blocks=<n>  — returns 402; pay via x402 to settle",
         "POST /v1/campaigns/:id/bid {bidPerBlockUsd} + X-Manage-Key — raise to outrank competitors",
         "GET  /v1/auction — see the board you are bidding against",
+        "Using this API constitutes acceptance of the Terms at legal.termsUrl.",
       ],
     });
   });
@@ -262,7 +278,16 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
       return void res.status(400).json({ error: "address must be a 0x-prefixed EVM address" });
     }
     const domain = req.headers.host ?? "localhost";
-    res.json(auth.issueChallenge({ address, domain, uri: `${req.protocol}://${domain}` }));
+    res.json(
+      auth.issueChallenge({
+        address,
+        domain,
+        uri: `${req.protocol}://${domain}`,
+        termsVersion: cfg.legalVersion,
+        termsUrl: `${cfg.publicUrl}/terms.html`,
+        privacyUrl: `${cfg.publicUrl}/privacy.html`,
+      }),
+    );
   });
 
   // Step 2: redeem the signed challenge for a session cookie. The nonce is
@@ -277,11 +302,14 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
   app.post("/v1/auth/verify", asyncRoute(async (req, res) => {
     if (!authAllowed(req, res)) return;
     const body = VerifyBody.parse(req.body);
-    const wallet = await auth.verifyChallenge(body.nonce, body.signature);
-    if (!wallet) {
+    const verified = await auth.verifyChallenge(body.nonce, body.signature);
+    if (!verified) {
       return void res.status(401).json({ error: "signature verification failed — request a fresh nonce and retry" });
     }
-    const advertiser = auth.ensureAdvertiser(wallet);
+    const { wallet, termsVersion } = verified;
+    // The signed message bound the wallet to this Terms version — record it as
+    // durable, per-account proof of acceptance.
+    const advertiser = auth.recordTermsAcceptance(wallet, termsVersion);
     const session = auth.createSession(wallet);
     res.cookie(SESSION_COOKIE, session.token, {
       ...sessionCookieOpts(req),
@@ -494,6 +522,32 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     res.json({ board: market.auctionState() });
   });
 
+  // ---- content reports (DSA Art. 16 notice-and-action) ----
+  // Public, rate-limited intake so anyone can report illegal/infringing
+  // content. Notices land in a durable queue the operator reviews via the
+  // admin surface — the takedown channel doesn't depend on watching an inbox.
+  const reportLimiter = new RateLimiter(1, 10);
+  const ReportBody = z.object({
+    campaignId: z.string().trim().max(64).optional(),
+    reason: z.enum(["illegal", "ip", "fraud", "malware", "deceptive", "other"]),
+    details: z.string().trim().min(1).max(4000),
+    reporter: z.string().trim().max(200).optional(),
+  });
+  app.post("/v1/reports", (req, res) => {
+    if (!reportLimiter.allow(clientIp(req), Date.now())) {
+      return void res.status(429).json({ error: "rate limit exceeded" });
+    }
+    const body = ReportBody.parse(req.body);
+    const report = market.createReport({
+      campaignId: body.campaignId ?? null,
+      reason: body.reason,
+      details: body.details,
+      reporter: body.reporter ?? null,
+    });
+    // Acknowledge with the id only — don't echo the queue back to the public.
+    res.status(201).json({ id: report.id, status: report.status });
+  });
+
   // The one paid route. On the mock rail the middleware marks the request
   // settled and the handler credits escrow. On the x402 rail the credit
   // happens in the onAfterSettle hook (see payments.ts) — settlement runs
@@ -691,6 +745,30 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     }
     market.resolvePayout(payout.id, "failed");
     res.json({ payout: market.getPayout(payout.id) });
+  });
+
+  // The operator's notice-and-action review queue. Filter by ?status=open to
+  // see what's awaiting a decision.
+  app.get("/v1/admin/reports", (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const status =
+      typeof req.query.status === "string" ? (req.query.status as Report["status"]) : undefined;
+    res.json({ reports: market.listReports(status), openCount: market.openReportCount() });
+  });
+
+  // Record the operator's decision on a report. "actioned" documents that the
+  // reported content was removed or restricted (do the removal via the campaign
+  // kill switch / pause / cancel); "dismissed" closes it as not actionable.
+  const ResolveReportBody = z.object({
+    status: z.enum(["actioned", "dismissed"]),
+    resolution: z.string().trim().max(2000).optional(),
+  });
+  app.post("/v1/admin/reports/:id/resolve", (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const body = ResolveReportBody.parse(req.body);
+    const report = market.resolveReport(req.params.id, body.status, body.resolution);
+    if (!report) return void res.status(404).json({ error: "report not found" });
+    res.json({ report });
   });
 
   // ---- Farcaster Mini App manifest ----

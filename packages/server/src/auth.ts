@@ -18,6 +18,7 @@ export const SESSION_COOKIE = "cv_session";
 interface Challenge {
   message: string;
   address: string; // EIP-55 checksummed, as embedded in the message
+  termsVersion: string; // the Terms version the message bound the signer to
   expiresAt: number;
 }
 
@@ -37,8 +38,18 @@ export class AdvertiserAuth {
     private chainId: number,
   ) {}
 
-  /** Build and remember the SIWE message this address must sign. */
-  issueChallenge(input: { address: string; domain: string; uri: string }): {
+  /** Build and remember the SIWE message this address must sign. The message
+   *  embeds an explicit agreement to a specific version of the Terms and links
+   *  the Terms and Privacy Policy as EIP-4361 Resources, so the resulting
+   *  signature is durable, non-repudiable proof the signer accepted them. */
+  issueChallenge(input: {
+    address: string;
+    domain: string;
+    uri: string;
+    termsVersion: string;
+    termsUrl: string;
+    privacyUrl: string;
+  }): {
     nonce: string;
     message: string;
     expiresAt: number;
@@ -59,7 +70,8 @@ export class AdvertiserAuth {
       `${input.domain} wants you to sign in with your Ethereum account:`,
       address,
       "",
-      "Sign in to Codevertise to manage your ad campaigns. This signature is free and sends no transaction.",
+      "Sign in to Codevertise to manage your ad campaigns. This signature is free and sends no transaction. " +
+        `By signing, you agree to the Codevertise Terms of Service (version ${input.termsVersion}) and Privacy Policy, linked below.`,
       "",
       `URI: ${input.uri}`,
       "Version: 1",
@@ -67,17 +79,24 @@ export class AdvertiserAuth {
       `Nonce: ${nonce}`,
       `Issued At: ${new Date(now).toISOString()}`,
       `Expiration Time: ${new Date(expiresAt).toISOString()}`,
+      "Resources:",
+      `- ${input.termsUrl}`,
+      `- ${input.privacyUrl}`,
     ].join("\n");
-    this.pending.set(nonce, { message, address, expiresAt });
+    this.pending.set(nonce, { message, address, termsVersion: input.termsVersion, expiresAt });
     return { nonce, message, expiresAt };
   }
 
   /**
    * Redeem a challenge: the nonce is consumed whatever the outcome, and the
    * signature must recover to the exact address the message was issued for.
-   * Returns the canonical (lowercase) wallet, or null.
+   * Returns the canonical (lowercase) wallet and the Terms version the signed
+   * message bound them to, or null.
    */
-  async verifyChallenge(nonce: string, signature: string): Promise<string | null> {
+  async verifyChallenge(
+    nonce: string,
+    signature: string,
+  ): Promise<{ wallet: string; termsVersion: string } | null> {
     const ch = this.pending.get(nonce);
     this.pending.delete(nonce);
     if (!ch || ch.expiresAt < Date.now()) return null;
@@ -86,7 +105,8 @@ export class AdvertiserAuth {
         message: ch.message,
         signature: signature as Hex,
       });
-      return signer.toLowerCase() === ch.address.toLowerCase() ? ch.address.toLowerCase() : null;
+      if (signer.toLowerCase() !== ch.address.toLowerCase()) return null;
+      return { wallet: ch.address.toLowerCase(), termsVersion: ch.termsVersion };
     } catch {
       return null;
     }
@@ -144,6 +164,16 @@ export class AdvertiserAuth {
     return this.db.prepare(`SELECT * FROM advertisers WHERE wallet = ?`).get(wallet) as
       | Advertiser
       | undefined;
+  }
+
+  /** Record that `wallet` accepted Terms `version` (by signing the SIWE message
+   *  that referenced it). Always advances to the latest accepted version. */
+  recordTermsAcceptance(wallet: string, version: string): Advertiser {
+    this.ensureAdvertiser(wallet);
+    this.db
+      .prepare(`UPDATE advertisers SET terms_version = ?, terms_accepted_at = ? WHERE wallet = ?`)
+      .run(version, Date.now(), wallet);
+    return this.getAdvertiser(wallet)!;
   }
 
   saveSettings(wallet: string, label: string): Advertiser {

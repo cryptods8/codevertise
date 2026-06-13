@@ -504,3 +504,59 @@ describe("SIWE session over the X-Session-Token header (embedded webview)", () =
     expect(anon).toEqual({ signedIn: false });
   });
 });
+
+describe("content reports (DSA notice-and-action)", () => {
+  it("captures a public notice and lets the operator review and resolve it", async () => {
+    const h = await start({ adminToken: "op-secret" });
+    const admin = { "x-admin-token": "op-secret" };
+
+    // 1. Anyone can file a notice against hosted content.
+    const filed = await fetch(`${h.base}/v1/reports`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        campaignId: h.campaignId,
+        reason: "ip",
+        details: "This creative uses our trademark without permission.",
+        reporter: "rights@example.com",
+      }),
+    });
+    expect(filed.status).toBe(201);
+    const { id, status } = await filed.json();
+    expect(id).toMatch(/^rep_/);
+    expect(status).toBe("open");
+
+    // 2. The notice lands in the operator's review queue.
+    const queue = await (
+      await fetch(`${h.base}/v1/admin/reports?status=open`, { headers: admin })
+    ).json();
+    expect(queue.openCount).toBe(1);
+    expect(queue.reports[0].id).toBe(id);
+    expect(queue.reports[0].campaign_id).toBe(h.campaignId);
+
+    // 3. The operator records a decision; the queue drains.
+    const resolved = await fetch(`${h.base}/v1/admin/reports/${id}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...admin },
+      body: JSON.stringify({ status: "actioned", resolution: "campaign paused pending review" }),
+    });
+    expect(resolved.status).toBe(200);
+    expect((await resolved.json()).report.status).toBe("actioned");
+    expect(h.market.openReportCount()).toBe(0);
+  });
+
+  it("rejects an invalid reason and hides the admin queue without a token", async () => {
+    const h = await start({ adminToken: "op-secret" });
+
+    const bad = await fetch(`${h.base}/v1/reports`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "spam", details: "x" }),
+    });
+    expect(bad.status).toBe(400);
+
+    // The review queue is admin-only.
+    const unauth = await fetch(`${h.base}/v1/admin/reports`);
+    expect(unauth.status).toBe(401);
+  });
+});

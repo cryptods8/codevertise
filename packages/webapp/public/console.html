@@ -46,6 +46,7 @@
       <div id="signed-out" hidden>
         <button id="sign-in" class="primary" type="button">sign in with wallet</button>
         <p class="signin-note">sign a free message — no transaction, no gas</p>
+        <p class="signin-note legal-consent">by signing in you agree to the <a href="/terms.html" target="_blank" rel="noopener">terms</a> &amp; <a href="/privacy.html" target="_blank" rel="noopener">privacy policy</a></p>
       </div>
       <div id="signed-in" hidden>
         <div class="account">
@@ -95,6 +96,16 @@
       <h2>market</h2>
       <div class="market-facts" id="market-facts">loading…</div>
     </section>
+
+    <footer class="console-footer">
+      <div class="links">
+        <a href="/">home</a>
+        <a href="/terms.html">terms</a>
+        <a href="/privacy.html">privacy</a>
+        <a href="/v1/info">/v1/info</a>
+      </div>
+      <p class="note" translate="no">codevertise · sponsored lines for AI coding agents · USDC over HTTP 402</p>
+    </footer>
   </main>
 
   <dialog id="fullboard-dialog" class="fullboard">
@@ -153,6 +164,7 @@
         <input id="bid" name="bid" type="number" min="1" step="0.5" value="1.50" required inputmode="decimal" autocomplete="off" />
         <p class="hint" id="bid-hint"></p>
       </div>
+      <p class="hint legal-consent">by creating this campaign you confirm your ad and its landing page comply with our <a href="/terms.html" target="_blank" rel="noopener">terms</a> and <a href="/terms.html#8" target="_blank" rel="noopener">acceptable use policy</a>.</p>
       <div class="dialog-actions">
         <button type="button" class="ghost" data-close>cancel</button>
         <button type="submit" class="primary">create campaign</button>

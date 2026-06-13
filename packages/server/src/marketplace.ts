@@ -3,7 +3,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { nanoid } from "nanoid";
 import type { Config } from "./config.js";
 import { getOrCreateSigningSecret } from "./db.js";
-import type { AdEvent, Campaign, Payment, Payout, Publisher } from "./db.js";
+import type { AdEvent, Campaign, Payment, Payout, Publisher, Report } from "./db.js";
 
 function sha256Hex(s: string): string {
   return createHash("sha256").update(s, "utf8").digest("hex");
@@ -32,6 +32,55 @@ export class Marketplace {
   /** Whether an event with this idempotency key has already been recorded. */
   hasEvent(key: string): boolean {
     return this.db.prepare(`SELECT 1 FROM events WHERE key = ?`).get(key) !== undefined;
+  }
+
+  // ---- content reports (DSA notice-and-action) ----
+
+  /** Record a notice about hosted content. Returns the stored report. */
+  createReport(input: {
+    campaignId?: string | null;
+    reason: string;
+    details: string;
+    reporter?: string | null;
+  }): Report {
+    const id = `rep_${nanoid(12)}`;
+    this.db
+      .prepare(
+        `INSERT INTO reports (id, campaign_id, reason, details, reporter, status, created_at)
+         VALUES (?, ?, ?, ?, ?, 'open', ?)`,
+      )
+      .run(id, input.campaignId ?? null, input.reason, input.details, input.reporter ?? null, Date.now());
+    return this.getReport(id)!;
+  }
+
+  getReport(id: string): Report | undefined {
+    return this.db.prepare(`SELECT * FROM reports WHERE id = ?`).get(id) as Report | undefined;
+  }
+
+  /** Reports for the operator's review queue, newest first; filter by status. */
+  listReports(status?: Report["status"]): Report[] {
+    return (
+      status
+        ? this.db
+            .prepare(`SELECT * FROM reports WHERE status = ? ORDER BY created_at DESC`)
+            .all(status)
+        : this.db.prepare(`SELECT * FROM reports ORDER BY created_at DESC`).all()
+    ) as Report[];
+  }
+
+  /** Operator decision on a report: actioned (content removed/restricted) or dismissed. */
+  resolveReport(id: string, status: "actioned" | "dismissed", resolution?: string): Report | undefined {
+    const existing = this.getReport(id);
+    if (!existing) return undefined;
+    this.db
+      .prepare(`UPDATE reports SET status = ?, resolved_at = ?, resolution = ? WHERE id = ?`)
+      .run(status, Date.now(), resolution ?? null, id);
+    return this.getReport(id);
+  }
+
+  /** Count of open reports — a cheap signal for the operator's review queue. */
+  openReportCount(): number {
+    return (this.db.prepare(`SELECT COUNT(*) AS n FROM reports WHERE status = 'open'`).get() as { n: number }).n;
   }
 
   // ---- campaigns & auction ----

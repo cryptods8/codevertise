@@ -56,6 +56,20 @@ h1 { margin: 0; font-size: 18px; letter-spacing: 1px; }
 #signed-out { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
 #signed-out[hidden], #signed-in[hidden] { display: none; }
 .signin-note { margin: 0; color: var(--muted); font-size: 11px; }
+.legal-consent { color: var(--muted); }
+.legal-consent a { color: var(--accent); }
+#signed-out .legal-consent { font-size: 11px; }
+
+/* console footer */
+.console-footer {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 16px; flex-wrap: wrap;
+  margin-top: 8px; padding: 18px 4px 0; border-top: 1px solid var(--border);
+}
+.console-footer .links { display: flex; gap: 18px; flex-wrap: wrap; }
+.console-footer a { color: var(--muted); text-decoration: none; font-size: 12.5px; }
+.console-footer a:hover { color: var(--text); }
+.console-footer .note { color: var(--muted); font-size: 12px; margin: 0; }
 #signed-in { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .account { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
 #acct-label { font-weight: 600; font-size: 13.5px; }

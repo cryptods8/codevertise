@@ -8,6 +8,10 @@ export interface Config {
   /** Public origin the app is served from (no trailing slash). Used to build
    *  absolute URLs in the Farcaster Mini App manifest. */
   publicUrl: string;
+  /** Version identifier of the Terms of Service currently in effect. Embedded
+   *  in the SIWE sign-in message so each advertiser cryptographically signs
+   *  agreement to a specific version, and recorded against their account. */
+  legalVersion: string;
   /** Address that receives advertiser deposits (the marketplace treasury). */
   payTo: string;
   facilitatorUrl: string;
@@ -97,6 +101,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     paymentsMode: mode,
     network: env.X402_NETWORK ?? "eip155:84532",
     publicUrl: (env.PUBLIC_URL ?? "https://codevertise.dev").replace(/\/+$/, ""),
+    legalVersion: env.LEGAL_VERSION ?? "2026-06-13.6",
     payTo,
     facilitatorUrl: env.FACILITATOR_URL ?? "https://facilitator.x402.org",
     payoutPrivateKey,
