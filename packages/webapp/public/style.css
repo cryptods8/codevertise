@@ -188,8 +188,9 @@ dialog {
   background: var(--panel); color: var(--text);
   border: 1px solid var(--border);
   width: min(640px, calc(100vw - 32px));
-  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
   padding: 22px 26px;
+  overflow-y: auto;
   overscroll-behavior: contain;
 }
 dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
@@ -329,8 +330,8 @@ form#create-form, form#settings-form { display: flex; flex-direction: column; ga
 
   /* dialogs become bottom sheets */
   dialog {
-    width: 100vw; max-width: 100vw; margin: auto 0 0;
-    max-height: 92vh; padding: 18px 16px;
+    width: 100%; max-width: 100%; margin: auto 0 0;
+    max-height: 92dvh; padding: 18px 16px;
     border-left: none; border-right: none; border-bottom: none;
   }
   .stat-grid { grid-template-columns: repeat(2, 1fr); }

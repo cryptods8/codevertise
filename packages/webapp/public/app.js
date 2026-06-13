@@ -294,6 +294,39 @@ async function api(path, opts = {}) {
 const createDialog = $("#create-dialog");
 const manageDialog = $("#manage-dialog");
 
+// In-app replacement for window.confirm(): the Farcaster Mini App webview is
+// sandboxed without "allow-modals", so confirm()/alert() are silently ignored.
+// Resolves true on confirm, false on cancel/backdrop/Escape.
+const confirmDialog = $("#confirm-dialog");
+function confirmModal(message, { title = "confirm", okLabel = "confirm", danger = false } = {}) {
+  return new Promise((resolve) => {
+    $("#confirm-title").textContent = title;
+    $("#confirm-message").textContent = message;
+    const okBtn = $("#confirm-ok");
+    okBtn.textContent = okLabel;
+    // danger → red outline (just .danger); otherwise the accent-filled .primary.
+    okBtn.classList.toggle("danger", danger);
+    okBtn.classList.toggle("primary", !danger);
+    let done = false;
+    const finish = (val) => {
+      if (done) return;
+      done = true;
+      okBtn.removeEventListener("click", onOk);
+      $("#confirm-cancel").removeEventListener("click", onCancel);
+      confirmDialog.removeEventListener("close", onCancel);
+      if (confirmDialog.open) confirmDialog.close();
+      resolve(val);
+    };
+    const onOk = () => finish(true);
+    const onCancel = () => finish(false);
+    okBtn.addEventListener("click", onOk);
+    $("#confirm-cancel").addEventListener("click", onCancel);
+    // Fires on Escape and backdrop click (handled by the shared dialog listener).
+    confirmDialog.addEventListener("close", onCancel);
+    confirmDialog.showModal();
+  });
+}
+
 // A click on the backdrop (the dialog element itself, not its content) closes —
 // except the forced first-run settings pass, which only "save" dismisses.
 for (const d of document.querySelectorAll("dialog")) {
@@ -609,7 +642,12 @@ $("#manage-body").addEventListener("click", async (e) => {
   } else if (e.target.closest(".withdraw-btn")) {
     await withdrawCampaign(id);
   } else if (e.target.closest(".remove-btn")) {
-    if (confirm("Forget this campaign's manage key? You will no longer see it (or its refunds) in this browser.")) {
+    if (
+      await confirmModal(
+        "You will no longer see this campaign (or its refunds) in this browser.",
+        { title: "Forget manage key?", okLabel: "forget", danger: true },
+      )
+    ) {
       dropManageKey(id);
       manageDialog.close();
       toast("campaign removed from this browser");
@@ -642,7 +680,14 @@ async function cancelCampaign(id) {
     remaining > 0
       ? `The remaining ${fmt(remaining, 4)} will be withdrawn to ${to}.`
       : "It has no unspent budget.";
-  if (!confirm(`Cancel this campaign for good? It stops serving immediately and cannot be resumed. ${note}`)) return;
+  if (
+    !(await confirmModal(`It stops serving immediately and cannot be resumed. ${note}`, {
+      title: "Cancel this campaign for good?",
+      okLabel: "cancel campaign",
+      danger: true,
+    }))
+  )
+    return;
   try {
     const { body } = await api(`/v1/campaigns/${id}/cancel`, {
       method: "POST",
