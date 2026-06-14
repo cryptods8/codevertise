@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import pg from "pg";
 import { randomBytes } from "node:crypto";
 
 export interface Campaign {
@@ -127,132 +127,189 @@ export interface Report {
   resolution: string | null;
 }
 
-export function openDb(path: string): Database.Database {
-  const db = new Database(path);
-  db.pragma("journal_mode = WAL");
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS campaigns (
-      id TEXT PRIMARY KEY,
-      advertiser TEXT NOT NULL,
-      label TEXT,
-      message TEXT NOT NULL,
-      url TEXT NOT NULL,
-      bid_per_block_micro INTEGER NOT NULL,
-      budget_micro INTEGER NOT NULL DEFAULT 0,
-      spent_micro INTEGER NOT NULL DEFAULT 0,
-      refunded_micro INTEGER NOT NULL DEFAULT 0,
-      status TEXT NOT NULL DEFAULT 'active',
-      created_at INTEGER NOT NULL,
-      manage_key_hash TEXT,
-      owner_wallet TEXT,
-      activated_at INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS advertisers (
-      wallet TEXT PRIMARY KEY,
-      label TEXT,
-      created_at INTEGER NOT NULL,
-      settings_at INTEGER,
-      terms_version TEXT,
-      terms_accepted_at INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS sessions (
-      token_hash TEXT PRIMARY KEY,
-      wallet TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      expires_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS events (
-      key TEXT PRIMARY KEY,
-      type TEXT NOT NULL,
-      campaign_id TEXT NOT NULL REFERENCES campaigns(id),
-      publisher TEXT NOT NULL,
-      surface TEXT NOT NULL,
-      amount_micro INTEGER NOT NULL,
-      publisher_micro INTEGER NOT NULL,
-      created_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS payments (
-      id TEXT PRIMARY KEY,
-      campaign_id TEXT NOT NULL REFERENCES campaigns(id),
-      payer TEXT NOT NULL,
-      amount_micro INTEGER NOT NULL,
-      rail TEXT NOT NULL,
-      tx TEXT,
-      created_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS publishers (
-      wallet TEXT PRIMARY KEY,
-      earned_micro INTEGER NOT NULL DEFAULT 0,
-      paid_micro INTEGER NOT NULL DEFAULT 0
-    );
-    CREATE TABLE IF NOT EXISTS payouts (
-      id TEXT PRIMARY KEY,
-      wallet TEXT NOT NULL,
-      amount_micro INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'queued',
-      kind TEXT NOT NULL DEFAULT 'earnings',
-      campaign_id TEXT,
-      tx TEXT,
-      created_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS reports (
-      id TEXT PRIMARY KEY,
-      campaign_id TEXT,
-      reason TEXT NOT NULL,
-      details TEXT NOT NULL,
-      reporter TEXT,
-      status TEXT NOT NULL DEFAULT 'open',
-      created_at INTEGER NOT NULL,
-      resolved_at INTEGER,
-      resolution TEXT
-    );
-    CREATE TABLE IF NOT EXISTS meta (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_campaigns_auction
-      ON campaigns(status, bid_per_block_micro DESC, created_at ASC);
-    CREATE INDEX IF NOT EXISTS idx_events_campaign ON events(campaign_id);
-    CREATE INDEX IF NOT EXISTS idx_events_publisher ON events(publisher);
-    CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at DESC);
-  `);
-  const campaignCols = db.prepare(`PRAGMA table_info(campaigns)`).all() as { name: string }[];
-  if (!campaignCols.some((c) => c.name === "label")) {
-    db.exec(`ALTER TABLE campaigns ADD COLUMN label TEXT`);
+// node-postgres returns BIGINT (int8, OID 20) as a string to avoid precision
+// loss past 2^53. Every BIGINT in this schema is a micro-USD amount or a
+// millisecond timestamp, all comfortably under 2^53, so parse them back to
+// JS numbers globally — the rest of the codebase treats them as numbers.
+pg.types.setTypeParser(20, (v) => (v === null ? null : Number(v)));
+
+/** A query executor — the pool itself, or a single client inside a transaction. */
+export interface Queryer {
+  all<T>(text: string, params?: unknown[]): Promise<T[]>;
+  get<T>(text: string, params?: unknown[]): Promise<T | undefined>;
+  run(text: string, params?: unknown[]): Promise<number>;
+}
+
+function executor(q: pg.Pool | pg.PoolClient): Queryer {
+  return {
+    async all<T>(text: string, params?: unknown[]): Promise<T[]> {
+      return (await q.query(text, params as never)).rows as T[];
+    },
+    async get<T>(text: string, params?: unknown[]): Promise<T | undefined> {
+      return (await q.query(text, params as never)).rows[0] as T | undefined;
+    },
+    async run(text: string, params?: unknown[]): Promise<number> {
+      return (await q.query(text, params as never)).rowCount ?? 0;
+    },
+  };
+}
+
+/**
+ * The application's Postgres handle. Wraps a `pg.Pool` with the small async
+ * query surface (`get`/`all`/`run`) the marketplace uses, plus `tx()` for
+ * statements that must commit atomically (funding, event billing, payouts).
+ */
+export class Db {
+  private exec: Queryer;
+  constructor(private pool: pg.Pool) {
+    this.exec = executor(pool);
   }
-  if (!campaignCols.some((c) => c.name === "manage_key_hash")) {
-    db.exec(`ALTER TABLE campaigns ADD COLUMN manage_key_hash TEXT`);
+
+  all<T>(text: string, params?: unknown[]): Promise<T[]> {
+    return this.exec.all<T>(text, params);
   }
-  if (!campaignCols.some((c) => c.name === "refunded_micro")) {
-    db.exec(`ALTER TABLE campaigns ADD COLUMN refunded_micro INTEGER NOT NULL DEFAULT 0`);
+  get<T>(text: string, params?: unknown[]): Promise<T | undefined> {
+    return this.exec.get<T>(text, params);
   }
-  if (!campaignCols.some((c) => c.name === "owner_wallet")) {
-    db.exec(`ALTER TABLE campaigns ADD COLUMN owner_wallet TEXT`);
+  run(text: string, params?: unknown[]): Promise<number> {
+    return this.exec.run(text, params);
   }
-  if (!campaignCols.some((c) => c.name === "activated_at")) {
-    db.exec(`ALTER TABLE campaigns ADD COLUMN activated_at INTEGER`);
-    // Grandfather campaigns that were already serving under the old "every
-    // funded active bid serves" rule: they stay active per the retention rules.
-    // The new admission gate only applies to campaigns that join from here on.
-    db.exec(
-      `UPDATE campaigns SET activated_at = created_at WHERE status = 'active' AND activated_at IS NULL`,
-    );
+
+  /** Run `fn` inside a single transaction; commits on success, rolls back on throw. */
+  async tx<T>(fn: (t: Queryer) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await fn(executor(client));
+      await client.query("COMMIT");
+      return result;
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        /* connection already broken — release it below regardless */
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
   }
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_campaigns_owner ON campaigns(owner_wallet)`);
-  const advertiserCols = db.prepare(`PRAGMA table_info(advertisers)`).all() as { name: string }[];
-  if (!advertiserCols.some((c) => c.name === "terms_version")) {
-    db.exec(`ALTER TABLE advertisers ADD COLUMN terms_version TEXT`);
+
+  async close(): Promise<void> {
+    await this.pool.end();
   }
-  if (!advertiserCols.some((c) => c.name === "terms_accepted_at")) {
-    db.exec(`ALTER TABLE advertisers ADD COLUMN terms_accepted_at INTEGER`);
+}
+
+const SCHEMA = `
+  CREATE TABLE IF NOT EXISTS campaigns (
+    id TEXT PRIMARY KEY,
+    advertiser TEXT NOT NULL,
+    label TEXT,
+    message TEXT NOT NULL,
+    url TEXT NOT NULL,
+    bid_per_block_micro BIGINT NOT NULL,
+    budget_micro BIGINT NOT NULL DEFAULT 0,
+    spent_micro BIGINT NOT NULL DEFAULT 0,
+    refunded_micro BIGINT NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at BIGINT NOT NULL,
+    manage_key_hash TEXT,
+    owner_wallet TEXT,
+    activated_at BIGINT
+  );
+  CREATE TABLE IF NOT EXISTS advertisers (
+    wallet TEXT PRIMARY KEY,
+    label TEXT,
+    created_at BIGINT NOT NULL,
+    settings_at BIGINT,
+    terms_version TEXT,
+    terms_accepted_at BIGINT
+  );
+  CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    wallet TEXT NOT NULL,
+    created_at BIGINT NOT NULL,
+    expires_at BIGINT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS events (
+    key TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+    publisher TEXT NOT NULL,
+    surface TEXT NOT NULL,
+    amount_micro BIGINT NOT NULL,
+    publisher_micro BIGINT NOT NULL,
+    created_at BIGINT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS payments (
+    id TEXT PRIMARY KEY,
+    campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+    payer TEXT NOT NULL,
+    amount_micro BIGINT NOT NULL,
+    rail TEXT NOT NULL,
+    tx TEXT,
+    created_at BIGINT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS publishers (
+    wallet TEXT PRIMARY KEY,
+    earned_micro BIGINT NOT NULL DEFAULT 0,
+    paid_micro BIGINT NOT NULL DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS payouts (
+    id TEXT PRIMARY KEY,
+    wallet TEXT NOT NULL,
+    amount_micro BIGINT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    kind TEXT NOT NULL DEFAULT 'earnings',
+    campaign_id TEXT,
+    tx TEXT,
+    created_at BIGINT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS reports (
+    id TEXT PRIMARY KEY,
+    campaign_id TEXT,
+    reason TEXT NOT NULL,
+    details TEXT NOT NULL,
+    reporter TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
+    created_at BIGINT NOT NULL,
+    resolved_at BIGINT,
+    resolution TEXT
+  );
+  CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_campaigns_auction
+    ON campaigns(status, bid_per_block_micro DESC, created_at ASC);
+  CREATE INDEX IF NOT EXISTS idx_campaigns_owner ON campaigns(owner_wallet);
+  CREATE INDEX IF NOT EXISTS idx_events_campaign ON events(campaign_id);
+  CREATE INDEX IF NOT EXISTS idx_events_publisher ON events(publisher);
+  CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at DESC);
+`;
+
+/**
+ * Open the marketplace database.
+ *
+ * With a connection string (DATABASE_URL in production) this connects to a real
+ * PostgreSQL server — the primary datastore. Without one, it spins up an
+ * in-process `pg-mem` instance that speaks the same wire surface, so tests and
+ * zero-config local dev run the identical SQL against an ephemeral Postgres.
+ */
+export async function openDb(connectionString?: string): Promise<Db> {
+  let pool: pg.Pool;
+  if (connectionString) {
+    pool = new pg.Pool({ connectionString });
+  } else {
+    // pg-mem is a dev/test dependency; load it lazily so production images that
+    // always set DATABASE_URL don't need it installed.
+    const { newDb } = await import("pg-mem");
+    const mem = newDb();
+    const adapter = mem.adapters.createPg();
+    pool = new adapter.Pool();
   }
-  const payoutCols = db.prepare(`PRAGMA table_info(payouts)`).all() as { name: string }[];
-  if (!payoutCols.some((c) => c.name === "kind")) {
-    db.exec(`ALTER TABLE payouts ADD COLUMN kind TEXT NOT NULL DEFAULT 'earnings'`);
-  }
-  if (!payoutCols.some((c) => c.name === "campaign_id")) {
-    db.exec(`ALTER TABLE payouts ADD COLUMN campaign_id TEXT`);
-  }
+  const db = new Db(pool);
+  await pool.query(SCHEMA);
   return db;
 }
 
@@ -261,15 +318,21 @@ export function openDb(path: string): Database.Database {
  * back to a random key persisted in the DB so tokens survive a restart (and a
  * fresh in-memory DB just gets an ephemeral one). Returned as raw bytes.
  */
-export function getOrCreateSigningSecret(db: Database.Database, configured?: string): Buffer {
+export async function getOrCreateSigningSecret(db: Db, configured?: string): Promise<Buffer> {
   if (configured && configured.length > 0) return Buffer.from(configured, "utf8");
-  const row = db.prepare(`SELECT value FROM meta WHERE key = 'event_signing_secret'`).get() as
-    | { value: string }
-    | undefined;
+  const row = await db.get<{ value: string }>(
+    `SELECT value FROM meta WHERE key = 'event_signing_secret'`,
+  );
   if (row) return Buffer.from(row.value, "hex");
   const secret = randomBytes(32);
-  db.prepare(`INSERT INTO meta (key, value) VALUES ('event_signing_secret', ?)`).run(
-    secret.toString("hex"),
+  // ON CONFLICT guards the race where two boots seed at once; re-read after.
+  await db.run(
+    `INSERT INTO meta (key, value) VALUES ('event_signing_secret', $1)
+     ON CONFLICT (key) DO NOTHING`,
+    [secret.toString("hex")],
   );
-  return secret;
+  const stored = await db.get<{ value: string }>(
+    `SELECT value FROM meta WHERE key = 'event_signing_secret'`,
+  );
+  return Buffer.from(stored!.value, "hex");
 }

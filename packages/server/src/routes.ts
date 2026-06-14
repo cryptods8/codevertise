@@ -151,15 +151,15 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
   const SESSION_HEADER = "x-session-token";
   const sessionToken = (req: Request): string | undefined =>
     cookieValue(req, SESSION_COOKIE) ?? req.header(SESSION_HEADER) ?? undefined;
-  const sessionWallet = (req: Request): string | undefined =>
+  const sessionWallet = (req: Request): Promise<string | undefined> =>
     auth.sessionWallet(sessionToken(req));
 
   /** Campaign-owner gate: manage key, signed-in owner wallet, or admin token. */
-  const canManage = (req: Request, campaignId: string): boolean => {
+  const canManage = async (req: Request, campaignId: string): Promise<boolean> => {
     if (isAdmin(req)) return true;
-    if (market.verifyManageKey(campaignId, manageKeyFrom(req))) return true;
-    const wallet = sessionWallet(req);
-    return !!wallet && market.getCampaign(campaignId)?.owner_wallet === wallet;
+    if (await market.verifyManageKey(campaignId, manageKeyFrom(req))) return true;
+    const wallet = await sessionWallet(req);
+    return !!wallet && (await market.getCampaign(campaignId))?.owner_wallet === wallet;
   };
 
   // Campaign creative constraints. Landing URLs are https-only on the real
@@ -192,21 +192,21 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
   // Anti-fraud machinery: a signing key for serve tokens, per-IP buckets on
   // the two endpoints that move money, and a per-(publisher,surface) pacer so
   // a single surface can't bill faster than the human view rate.
-  const secret = market.signingSecret();
+  const secret = await market.signingSecret();
   const serveLimiter = new RateLimiter(cfg.serveRatePerSec, cfg.serveBurst);
   const eventLimiter = new RateLimiter(cfg.eventRatePerSec, cfg.eventBurst);
   const minViewMs = Math.floor(cfg.slotSeconds * 1000 * 0.9); // tolerate timer jitter
   const servePacer = new Pacer(minViewMs);
   const tokenTtlMs = cfg.tokenTtlSeconds * 1000;
 
-  app.get("/healthz", (_req, res) => {
+  app.get("/healthz", asyncRoute(async (_req, res) => {
     try {
-      market.winner(); // exercises the DB
+      await market.winner(); // exercises the DB
       res.json({ ok: true, mode: cfg.paymentsMode, uptimeSec: Math.floor(process.uptime()) });
     } catch (err) {
       res.status(503).json({ ok: false, error: String(err) });
     }
-  });
+  }));
 
   // Marketplace metadata — what an agent reads first.
   app.get("/v1/info", (_req, res) => {
@@ -309,8 +309,8 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     const { wallet, termsVersion } = verified;
     // The signed message bound the wallet to this Terms version — record it as
     // durable, per-account proof of acceptance.
-    const advertiser = auth.recordTermsAcceptance(wallet, termsVersion);
-    const session = auth.createSession(wallet);
+    const advertiser = await auth.recordTermsAcceptance(wallet, termsVersion);
+    const session = await auth.createSession(wallet);
     res.cookie(SESSION_COOKIE, session.token, {
       ...sessionCookieOpts(req),
       maxAge: SESSION_TTL_MS,
@@ -320,22 +320,22 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     res.json({ ...accountView(advertiser), token: session.token });
   }));
 
-  app.get("/v1/auth/session", (req, res) => {
-    const wallet = sessionWallet(req);
+  app.get("/v1/auth/session", asyncRoute(async (req, res) => {
+    const wallet = await sessionWallet(req);
     if (!wallet) return void res.json({ signedIn: false });
-    res.json(accountView(auth.ensureAdvertiser(wallet)));
-  });
+    res.json(accountView(await auth.ensureAdvertiser(wallet)));
+  }));
 
-  app.post("/v1/auth/logout", (req, res) => {
+  app.post("/v1/auth/logout", asyncRoute(async (req, res) => {
     const token = sessionToken(req);
-    if (token) auth.deleteSession(token);
+    if (token) await auth.deleteSession(token);
     res.clearCookie(SESSION_COOKIE, sessionCookieOpts(req));
     res.json({ signedIn: false });
-  });
+  }));
 
   /** 401-or-wallet gate for the signed-in account surface. */
-  const requireSession = (req: Request, res: Response): string | undefined => {
-    const wallet = sessionWallet(req);
+  const requireSession = async (req: Request, res: Response): Promise<string | undefined> => {
+    const wallet = await sessionWallet(req);
     if (!wallet) res.status(401).json({ error: "sign in with your wallet first" });
     return wallet;
   };
@@ -344,45 +344,48 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
   // the account's campaigns; the signed-in wallet doubles as the refund
   // destination, so no separate "advertiser wallet" setting exists.
   const AccountBody = z.object({ label: z.string().trim().min(1).max(32) });
-  app.put("/v1/account", (req, res) => {
-    const wallet = requireSession(req, res);
+  app.put("/v1/account", asyncRoute(async (req, res) => {
+    const wallet = await requireSession(req, res);
     if (!wallet) return;
     const body = AccountBody.parse(req.body);
-    const advertiser = auth.saveSettings(wallet, body.label);
-    market.relabelOwnedCampaigns(wallet, body.label);
+    const advertiser = await auth.saveSettings(wallet, body.label);
+    await market.relabelOwnedCampaigns(wallet, body.label);
     res.json(accountView(advertiser));
-  });
+  }));
 
   // The cross-browser "my campaigns" list: owner views (with refund trails)
   // of every campaign this wallet created while signed in.
-  app.get("/v1/me/campaigns", (req, res) => {
-    const wallet = requireSession(req, res);
+  app.get("/v1/me/campaigns", asyncRoute(async (req, res) => {
+    const wallet = await requireSession(req, res);
     if (!wallet) return;
+    const owned = await market.listCampaignsByOwner(wallet);
     res.json({
-      campaigns: market.listCampaignsByOwner(wallet).map((c) => ({
-        ...ownCampaign(c),
-        refunds: market.listCampaignPayouts(c.id),
-      })),
+      campaigns: await Promise.all(
+        owned.map(async (c) => ({
+          ...ownCampaign(c),
+          refunds: await market.listCampaignPayouts(c.id),
+        })),
+      ),
     });
-  });
+  }));
 
   // ---- advertiser side ----
 
-  app.post("/v1/campaigns", (req, res) => {
+  app.post("/v1/campaigns", asyncRoute(async (req, res) => {
     const body = CreateCampaign.parse(req.body);
     // Signed-in creators get the campaign bound to their wallet (manageable
     // from any browser) and inherit the account's board name; bare API
     // callers (agents) pass an advertiser wallet and keep the manage key.
-    const owner = sessionWallet(req);
+    const owner = await sessionWallet(req);
     const advertiser = body.advertiser ?? owner;
     if (!advertiser) {
       return void res.status(400).json({
         error: "advertiser is required — sign in with your wallet or pass an advertiser address",
       });
     }
-    const { manageKey, ...campaign } = market.createCampaign({
+    const { manageKey, ...campaign } = await market.createCampaign({
       advertiser,
-      label: body.label ?? (owner ? auth.getAdvertiser(owner)?.label : undefined) ?? undefined,
+      label: body.label ?? (owner ? (await auth.getAdvertiser(owner))?.label : undefined) ?? undefined,
       message: body.message,
       url: body.url,
       bidPerBlockMicro: usdToMicro(body.bidPerBlockUsd),
@@ -397,64 +400,62 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
         campaign.bid_per_block_micro,
       )} per block via x402)`,
     });
-  });
+  }));
 
   // Listing is public and wallet-free. Campaign management and stats are
   // keyed by the per-campaign manage key, not by knowing a wallet address.
   // Cancelled campaigns are removed from public surfaces; their owners can
   // still fetch them by id to track the refund.
-  app.get("/v1/campaigns", (_req, res) => {
+  app.get("/v1/campaigns", asyncRoute(async (_req, res) => {
+    const all = await market.listCampaigns();
     res.json({
-      campaigns: market
-        .listCampaigns()
-        .filter((c) => c.status !== "cancelled")
-        .map(publicCampaign),
+      campaigns: all.filter((c) => c.status !== "cancelled").map(publicCampaign),
     });
-  });
+  }));
 
-  app.get("/v1/campaigns/:id/stats", (req, res) => {
-    if (!canManage(req, req.params.id)) {
+  app.get("/v1/campaigns/:id/stats", asyncRoute(async (req, res) => {
+    if (!(await canManage(req, req.params.id))) {
       return void res.status(403).json({ error: "manage key required" });
     }
-    res.json(market.campaignStats(req.params.id));
-  });
+    res.json(await market.campaignStats(req.params.id));
+  }));
 
-  app.get("/v1/campaigns/:id", (req, res) => {
-    const c = market.getCampaign(req.params.id);
+  app.get("/v1/campaigns/:id", asyncRoute(async (req, res) => {
+    const c = await market.getCampaign(req.params.id);
     if (!c) return void res.status(404).json({ error: "campaign not found" });
     // The owner view carries the refund payout trail so a cancelled
     // campaign's withdrawal can be tracked to its on-chain tx.
     res.json(
-      canManage(req, c.id)
-        ? { ...ownCampaign(c), refunds: market.listCampaignPayouts(c.id) }
+      (await canManage(req, c.id))
+        ? { ...ownCampaign(c), refunds: await market.listCampaignPayouts(c.id) }
         : publicCampaign(c),
     );
-  });
+  }));
 
-  app.post("/v1/campaigns/:id/bid", (req, res) => {
-    if (!canManage(req, req.params.id)) {
+  app.post("/v1/campaigns/:id/bid", asyncRoute(async (req, res) => {
+    if (!(await canManage(req, req.params.id))) {
       return void res.status(403).json({ error: "manage key required to raise this campaign's bid" });
     }
     const body = RaiseBid.parse(req.body);
-    const campaign = market.raiseBid(req.params.id, usdToMicro(body.bidPerBlockUsd));
+    const campaign = await market.raiseBid(req.params.id, usdToMicro(body.bidPerBlockUsd));
     res.json({ campaign: ownCampaign(campaign) });
-  });
+  }));
 
   // Kill switch: the owner (manage key) or the operator (admin token) can
   // take a campaign off the board; paused campaigns never serve.
-  app.post("/v1/campaigns/:id/pause", (req, res) => {
-    if (!canManage(req, req.params.id)) {
+  app.post("/v1/campaigns/:id/pause", asyncRoute(async (req, res) => {
+    if (!(await canManage(req, req.params.id))) {
       return void res.status(403).json({ error: "manage key or admin token required" });
     }
-    res.json({ campaign: ownCampaign(market.setCampaignStatus(req.params.id, "paused")) });
-  });
+    res.json({ campaign: ownCampaign(await market.setCampaignStatus(req.params.id, "paused")) });
+  }));
 
-  app.post("/v1/campaigns/:id/resume", (req, res) => {
-    if (!canManage(req, req.params.id)) {
+  app.post("/v1/campaigns/:id/resume", asyncRoute(async (req, res) => {
+    if (!(await canManage(req, req.params.id))) {
       return void res.status(403).json({ error: "manage key or admin token required" });
     }
-    res.json({ campaign: ownCampaign(market.setCampaignStatus(req.params.id, "active")) });
-  });
+    res.json({ campaign: ownCampaign(await market.setCampaignStatus(req.params.id, "active")) });
+  }));
 
   // Where a refund payout goes: the caller's explicit choice, falling back to
   // the wallet given at creation, then to the SIWE owner wallet. An explicit
@@ -469,11 +470,11 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
   // Cancel is terminal: the campaign leaves the board for good and any
   // unspent escrow is withdrawn back to the advertiser in the same call.
   app.post("/v1/campaigns/:id/cancel", asyncRoute(async (req, res) => {
-    if (!canManage(req, req.params.id)) {
+    if (!(await canManage(req, req.params.id))) {
       return void res.status(403).json({ error: "manage key or admin token required" });
     }
     const body = RefundBody.parse(req.body ?? undefined);
-    const existing = market.getCampaign(req.params.id);
+    const existing = await market.getCampaign(req.params.id);
     if (!existing) return void res.status(404).json({ error: "campaign not found" });
 
     const remaining = market.remainingMicro(existing);
@@ -485,24 +486,24 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
       });
     }
 
-    const campaign = market.cancelCampaign(existing.id);
+    const campaign = await market.cancelCampaign(existing.id);
     let refund: (Payout & { error?: string }) | null = null;
     if (remaining > 0 && to) {
-      const payout = market.requestRefund(campaign.id, to);
+      const payout = await market.requestRefund(campaign.id, to);
       const result = await executePayout(cfg, market, payout.id, to, payout.amount_micro);
       refund = { ...payout, status: result.status, tx: result.tx ?? payout.tx, error: result.error };
     }
-    res.json({ campaign: ownCampaign(market.getCampaign(campaign.id)!), refund });
+    res.json({ campaign: ownCampaign((await market.getCampaign(campaign.id))!), refund });
   }));
 
   // Withdraw what's left of a cancelled campaign's escrow — the retry path
   // when the cancel-time refund failed terminally or was skipped.
   app.post("/v1/campaigns/:id/withdraw", asyncRoute(async (req, res) => {
-    if (!canManage(req, req.params.id)) {
+    if (!(await canManage(req, req.params.id))) {
       return void res.status(403).json({ error: "manage key or admin token required" });
     }
     const body = RefundBody.parse(req.body ?? undefined);
-    const c = market.getCampaign(req.params.id);
+    const c = await market.getCampaign(req.params.id);
     if (!c) return void res.status(404).json({ error: "campaign not found" });
     const to = refundWallet(c, body.refundTo);
     if (!to) {
@@ -510,17 +511,17 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
         .status(400)
         .json({ error: "refundTo must be a 0x-prefixed EVM address" });
     }
-    const payout = market.requestRefund(c.id, to);
+    const payout = await market.requestRefund(c.id, to);
     const result = await executePayout(cfg, market, payout.id, to, payout.amount_micro);
     res.status(201).json({
       payout: { ...payout, ...result },
-      campaign: ownCampaign(market.getCampaign(c.id)!),
+      campaign: ownCampaign((await market.getCampaign(c.id))!),
     });
   }));
 
-  app.get("/v1/auction", (_req, res) => {
-    res.json({ board: market.auctionState() });
-  });
+  app.get("/v1/auction", asyncRoute(async (_req, res) => {
+    res.json({ board: await market.auctionState() });
+  }));
 
   // ---- content reports (DSA Art. 16 notice-and-action) ----
   // Public, rate-limited intake so anyone can report illegal/infringing
@@ -533,12 +534,12 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     details: z.string().trim().min(1).max(4000),
     reporter: z.string().trim().max(200).optional(),
   });
-  app.post("/v1/reports", (req, res) => {
+  app.post("/v1/reports", asyncRoute(async (req, res) => {
     if (!reportLimiter.allow(clientIp(req), Date.now())) {
       return void res.status(429).json({ error: "rate limit exceeded" });
     }
     const body = ReportBody.parse(req.body);
-    const report = market.createReport({
+    const report = await market.createReport({
       campaignId: body.campaignId ?? null,
       reason: body.reason,
       details: body.details,
@@ -546,21 +547,21 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     });
     // Acknowledge with the id only — don't echo the queue back to the public.
     res.status(201).json({ id: report.id, status: report.status });
-  });
+  }));
 
   // The one paid route. On the mock rail the middleware marks the request
   // settled and the handler credits escrow. On the x402 rail the credit
   // happens in the onAfterSettle hook (see payments.ts) — settlement runs
   // after this handler, and a failed settlement discards this response.
   const paywall = await buildFundingPaywall(cfg, market);
-  app.post("/v1/fund", paywall, (req, res) => {
+  app.post("/v1/fund", paywall, asyncRoute(async (req, res) => {
     const campaignId = String(req.query.campaign ?? "");
     const blocks = Number(req.query.blocks ?? 1);
-    const amountMicro = fundingPriceMicro(market, campaignId, String(blocks));
+    const amountMicro = await fundingPriceMicro(market, campaignId, String(blocks));
 
     if (cfg.paymentsMode === "mock") {
       const settled = req.settledPayment ?? { payer: "unknown", rail: "mock" as const };
-      const { campaign, payment } = market.fundCampaign({
+      const { campaign, payment } = await market.fundCampaign({
         campaignId,
         payer: settled.payer,
         amountMicro,
@@ -582,16 +583,16 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
       payment: { rail: "x402", status: "settled" },
       note: "Escrow is credited at settlement; the on-chain tx hash is in the PAYMENT-RESPONSE header.",
     });
-  });
+  }));
 
   // ---- publisher side ----
 
-  app.get("/v1/serve", (req, res) => {
+  app.get("/v1/serve", asyncRoute(async (req, res) => {
     const now = Date.now();
     if (!serveLimiter.allow(clientIp(req), now)) {
       return void res.status(429).json({ error: "rate limit exceeded" });
     }
-    const winner = market.pickServe();
+    const winner = await market.pickServe();
     if (!winner) return void res.status(204).end();
 
     const impressionMicro = market.impressionCostMicro(winner);
@@ -630,9 +631,9 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
       publisherShare: cfg.publisherShare,
       token,
     });
-  });
+  }));
 
-  app.post("/v1/events", (req, res) => {
+  app.post("/v1/events", asyncRoute(async (req, res) => {
     const now = Date.now();
     if (!eventLimiter.allow(clientIp(req), now)) {
       return void res.status(429).json({ error: "rate limit exceeded" });
@@ -652,7 +653,7 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
 
     if (body.type === "click") {
       // A click can only follow a counted view of the same serve token…
-      if (!market.hasEvent(tok.jti)) {
+      if (!(await market.hasEvent(tok.jti))) {
         return void res
           .status(409)
           .json({ error: "click without a counted impression", recorded: false });
@@ -660,7 +661,7 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
       // …and clicks bill at 50× an impression, so they are capped to a
       // plausible click-through ratio per (publisher, campaign). The floor of
       // one click keeps a brand-new surface usable.
-      const counts = market.publisherCampaignCounts(tok.publisher, tok.campaignId);
+      const counts = await market.publisherCampaignCounts(tok.publisher, tok.campaignId);
       const allowed = Math.max(1, Math.floor(counts.impressions * cfg.clickRatio));
       if (counts.clicks >= allowed) {
         return void res.status(429).json({
@@ -670,7 +671,7 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
       }
     }
 
-    const event = market.recordEvent({
+    const event = await market.recordEvent({
       key: body.type === "impression" ? tok.jti : `${tok.jti}#click`,
       type: body.type,
       campaignId: tok.campaignId,
@@ -679,26 +680,26 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     });
     if (!event) return void res.status(200).json({ recorded: false, reason: "duplicate or exhausted budget" });
     res.status(201).json({ recorded: true, earnedMicro: event.publisher_micro });
-  });
+  }));
 
-  app.get("/v1/publishers/:wallet", (req, res) => {
-    const p = market.getPublisher(req.params.wallet);
+  app.get("/v1/publishers/:wallet", asyncRoute(async (req, res) => {
+    const p = await market.getPublisher(req.params.wallet);
     res.json({
       wallet: p.wallet,
       earnedMicro: p.earned_micro,
       paidMicro: p.paid_micro,
-      withdrawableMicro: market.balanceMicro(p.wallet),
+      withdrawableMicro: await market.balanceMicro(p.wallet),
       minPayoutMicro: cfg.minPayoutMicro,
-      payouts: market.listPayouts(p.wallet),
+      payouts: await market.listPayouts(p.wallet),
     });
-  });
+  }));
 
   app.post("/v1/publishers/:wallet/payouts", asyncRoute(async (req, res) => {
     const wallet = req.params.wallet;
     if (!isEvmAddress(wallet)) {
       return void res.status(400).json({ error: "wallet must be a 0x-prefixed EVM address" });
     }
-    const payout = market.requestPayout(wallet);
+    const payout = await market.requestPayout(wallet);
     const result = await executePayout(cfg, market, payout.id, wallet, payout.amount_micro);
     res.status(201).json({ payout: { ...payout, ...result } });
   }));
@@ -718,11 +719,57 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     return true;
   };
 
-  app.get("/v1/admin/payouts", (req, res) => {
+  // Operator dashboard summary: headline counts the admin console renders at
+  // the top so the queue depth is visible at a glance.
+  app.get("/v1/admin/overview", asyncRoute(async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const [campaigns, board, openReports, queuedPayouts, submittedPayouts] = await Promise.all([
+      market.listCampaigns(),
+      market.auctionState(),
+      market.openReportCount(),
+      market.listAllPayouts("queued"),
+      market.listAllPayouts("submitted"),
+    ]);
+    res.json({
+      mode: cfg.paymentsMode,
+      network: cfg.network,
+      campaigns: {
+        total: campaigns.length,
+        active: campaigns.filter((c) => c.status === "active").length,
+        paused: campaigns.filter((c) => c.status === "paused").length,
+        cancelled: campaigns.filter((c) => c.status === "cancelled").length,
+        serving: board.filter((b) => b.serving).length,
+      },
+      reports: { open: openReports },
+      payouts: { queued: queuedPayouts.length, submitted: submittedPayouts.length },
+    });
+  }));
+
+  // Full campaign list for moderation — unlike the public board this exposes
+  // the advertiser/owner wallets and every status (paused, cancelled too) so
+  // the operator can act on a reported campaign.
+  app.get("/v1/admin/campaigns", asyncRoute(async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const status =
+      typeof req.query.status === "string" ? (req.query.status as Campaign["status"]) : undefined;
+    let campaigns = await market.listCampaigns();
+    if (status) campaigns = campaigns.filter((c) => c.status === status);
+    res.json({
+      campaigns: campaigns.map((c) => ({
+        ...ownCampaign(c),
+        advertiser: c.advertiser,
+        ownerWallet: c.owner_wallet,
+        remainingMicro: market.remainingMicro(c),
+        serving: c.status === "active" && c.activated_at !== null,
+      })),
+    });
+  }));
+
+  app.get("/v1/admin/payouts", asyncRoute(async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const status = typeof req.query.status === "string" ? (req.query.status as Payout["status"]) : undefined;
-    res.json({ payouts: market.listAllPayouts(status) });
-  });
+    res.json({ payouts: await market.listAllPayouts(status) });
+  }));
 
   // Retry a queued payout (re-send) or reconcile a submitted one against its
   // recorded tx. Never re-sends a payout that has a tx hash.
@@ -733,9 +780,9 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
 
   // Operator decision: give up on a payout and refund the publisher balance.
   // Refuse when a tx was broadcast and not yet proven reverted.
-  app.post("/v1/admin/payouts/:id/fail", (req, res) => {
+  app.post("/v1/admin/payouts/:id/fail", asyncRoute(async (req, res) => {
     if (!requireAdmin(req, res)) return;
-    const payout = market.getPayout(req.params.id);
+    const payout = await market.getPayout(req.params.id);
     if (!payout) return void res.status(404).json({ error: "payout not found" });
     if (payout.status === "submitted" && req.query.force !== "1") {
       return void res.status(409).json({
@@ -743,18 +790,18 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
           "payout has a broadcast tx; reconcile with /retry first, or pass ?force=1 if the tx is provably dead",
       });
     }
-    market.resolvePayout(payout.id, "failed");
-    res.json({ payout: market.getPayout(payout.id) });
-  });
+    await market.resolvePayout(payout.id, "failed");
+    res.json({ payout: await market.getPayout(payout.id) });
+  }));
 
   // The operator's notice-and-action review queue. Filter by ?status=open to
   // see what's awaiting a decision.
-  app.get("/v1/admin/reports", (req, res) => {
+  app.get("/v1/admin/reports", asyncRoute(async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const status =
       typeof req.query.status === "string" ? (req.query.status as Report["status"]) : undefined;
-    res.json({ reports: market.listReports(status), openCount: market.openReportCount() });
-  });
+    res.json({ reports: await market.listReports(status), openCount: await market.openReportCount() });
+  }));
 
   // Record the operator's decision on a report. "actioned" documents that the
   // reported content was removed or restricted (do the removal via the campaign
@@ -763,13 +810,13 @@ export async function buildApp(cfg: Config, market: Marketplace): Promise<Expres
     status: z.enum(["actioned", "dismissed"]),
     resolution: z.string().trim().max(2000).optional(),
   });
-  app.post("/v1/admin/reports/:id/resolve", (req, res) => {
+  app.post("/v1/admin/reports/:id/resolve", asyncRoute(async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const body = ResolveReportBody.parse(req.body);
-    const report = market.resolveReport(req.params.id, body.status, body.resolution);
+    const report = await market.resolveReport(req.params.id, body.status, body.resolution);
     if (!report) return void res.status(404).json({ error: "report not found" });
     res.json({ report });
-  });
+  }));
 
   // ---- Farcaster Mini App manifest ----
   // Lets Farcaster clients discover and embed the console as a Mini App. The

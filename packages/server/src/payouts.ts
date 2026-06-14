@@ -94,16 +94,16 @@ export async function executePayout(
       console.error(JSON.stringify({ evt: "payout_send_error", payoutId, err: String(err) }));
       return { status: "queued", error: "send failed; payout remains queued for retry" };
     }
-    market.markPayoutSubmitted(payoutId, tx);
+    await market.markPayoutSubmitted(payoutId, tx);
 
     try {
       const outcome = await s.wait(tx);
       if (outcome === "reverted") {
-        market.resolvePayout(payoutId, "failed", tx);
+        await market.resolvePayout(payoutId, "failed", tx);
         console.error(JSON.stringify({ evt: "payout_reverted", payoutId, tx }));
         return { status: "failed", tx, error: "transaction reverted; balance refunded" };
       }
-      market.resolvePayout(payoutId, "sent", tx);
+      await market.resolvePayout(payoutId, "sent", tx);
       console.log(JSON.stringify({ evt: "payout_sent", payoutId, tx, toWallet, amountMicro }));
       return { status: "sent", tx };
     } catch (err) {
@@ -124,7 +124,7 @@ export async function retryPayout(
   payoutId: string,
   sender?: PayoutSender,
 ): Promise<PayoutResult> {
-  const payout = market.getPayout(payoutId);
+  const payout = await market.getPayout(payoutId);
   if (!payout) return { status: "failed", error: "payout not found" };
 
   if (payout.status === "queued") {
@@ -137,10 +137,10 @@ export async function retryPayout(
     const s = sender ?? (await viemSender(cfg));
     const outcome = await s.wait(payout.tx);
     if (outcome === "reverted") {
-      market.resolvePayout(payoutId, "failed", payout.tx);
+      await market.resolvePayout(payoutId, "failed", payout.tx);
       return { status: "failed", tx: payout.tx, error: "transaction reverted; balance refunded" };
     }
-    market.resolvePayout(payoutId, "sent", payout.tx);
+    await market.resolvePayout(payoutId, "sent", payout.tx);
     return { status: "sent", tx: payout.tx };
   }
   return { status: payout.status, tx: payout.tx ?? undefined };

@@ -11,9 +11,9 @@ import { creditSettledFunding, payerFromSettlement } from "./payments.js";
 
 const cfg = loadConfig({} as NodeJS.ProcessEnv);
 
-function marketWithCampaign() {
-  const m = new Marketplace(openDb(":memory:"), cfg);
-  const c = m.createCampaign({
+async function marketWithCampaign() {
+  const m = new Marketplace(await openDb(), cfg);
+  const c = await m.createCampaign({
     advertiser: "0xAdv",
     message: "ad",
     url: "https://example.com",
@@ -39,21 +39,21 @@ function settleCtx(campaignId: string, blocks: string, path = "/v1/fund") {
 }
 
 describe("x402 settlement credit", () => {
-  it("credits exactly blocks × bid with the facilitator's payer and tx", () => {
-    const { m, c } = marketWithCampaign();
-    creditSettledFunding(m, settleCtx(c.id, "3"));
-    expect(m.getCampaign(c.id)!.budget_micro).toBe(6 * USD);
+  it("credits exactly blocks × bid with the facilitator's payer and tx", async () => {
+    const { m, c } = await marketWithCampaign();
+    await creditSettledFunding(m, settleCtx(c.id, "3"));
+    expect((await m.getCampaign(c.id))!.budget_micro).toBe(6 * USD);
   });
 
-  it("ignores settlements for other routes", () => {
-    const { m, c } = marketWithCampaign();
-    creditSettledFunding(m, settleCtx(c.id, "3", "/v1/other"));
-    expect(m.getCampaign(c.id)!.budget_micro).toBe(0);
+  it("ignores settlements for other routes", async () => {
+    const { m, c } = await marketWithCampaign();
+    await creditSettledFunding(m, settleCtx(c.id, "3", "/v1/other"));
+    expect((await m.getCampaign(c.id))!.budget_micro).toBe(0);
   });
 
-  it("throws (and credits nothing) for a vanished campaign — money must never disappear silently", () => {
-    const { m } = marketWithCampaign();
-    expect(() => creditSettledFunding(m, settleCtx("cmp_gone", "1"))).toThrow();
+  it("throws (and credits nothing) for a vanished campaign — money must never disappear silently", async () => {
+    const { m } = await marketWithCampaign();
+    await expect(creditSettledFunding(m, settleCtx("cmp_gone", "1"))).rejects.toThrow();
   });
 
   it("prefers the facilitator-reported payer, falls back to the signed authorization", () => {

@@ -33,17 +33,17 @@ declare global {
 }
 
 /** Price of a funding request: blocks × the campaign's own bid-per-block. */
-export function fundingPriceMicro(
+export async function fundingPriceMicro(
   market: Marketplace,
   campaignId: string | undefined,
   blocksRaw: string | undefined,
-): number {
+): Promise<number> {
   const blocks = Number(blocksRaw ?? 1);
   if (!campaignId) throw badRequest("campaign query param is required");
   if (!Number.isInteger(blocks) || blocks < 1 || blocks > 1000) {
     throw badRequest("blocks must be an integer in 1..1000");
   }
-  const c = market.getCampaign(campaignId);
+  const c = await market.getCampaign(campaignId);
   if (!c) throw badRequest(`campaign ${campaignId} not found`);
   if (c.status === "cancelled") {
     throw badRequest(`campaign ${campaignId} is cancelled and no longer accepts funding`);
@@ -68,10 +68,10 @@ export async function buildFundingPaywall(
 // ---- mock rail ----
 
 function mockPaywall(cfg: Config, market: Marketplace): RequestHandler {
-  return (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
     let priceMicro: number;
     try {
-      priceMicro = fundingPriceMicro(
+      priceMicro = await fundingPriceMicro(
         market,
         req.query.campaign as string | undefined,
         req.query.blocks as string | undefined,
@@ -141,7 +141,10 @@ export function payerFromSettlement(ctx: SettleHookContext): string | undefined 
  *   - the ledger row carries the facilitator's payer and on-chain tx hash.
  * Exported for tests.
  */
-export function creditSettledFunding(market: Marketplace, ctx: SettleHookContext): void {
+export async function creditSettledFunding(
+  market: Marketplace,
+  ctx: SettleHookContext,
+): Promise<void> {
   const request = ctx.transportContext?.request;
   if (request?.path !== "/v1/fund") return; // only one paid route today
   const adapter = request.adapter;
@@ -150,9 +153,9 @@ export function creditSettledFunding(market: Marketplace, ctx: SettleHookContext
     return Array.isArray(v) ? v[0] : v;
   };
   const campaignId = q("campaign");
-  const amountMicro = fundingPriceMicro(market, campaignId, q("blocks"));
+  const amountMicro = await fundingPriceMicro(market, campaignId, q("blocks"));
   const tx = ctx.result?.transaction;
-  market.fundCampaign({
+  await market.fundCampaign({
     campaignId: campaignId as string,
     payer: payerFromSettlement(ctx) ?? "unknown",
     amountMicro,
@@ -180,7 +183,7 @@ async function x402Paywall(cfg: Config, market: Marketplace): Promise<RequestHan
 
   server.onAfterSettle(async (ctx) => {
     try {
-      creditSettledFunding(market, ctx as unknown as SettleHookContext);
+      await creditSettledFunding(market, ctx as unknown as SettleHookContext);
     } catch (err) {
       // USDC moved but the ledger credit failed — surface it on both sides
       // and leave a reconciliation trail keyed by the tx hash.
@@ -203,12 +206,12 @@ async function x402Paywall(cfg: Config, market: Marketplace): Promise<RequestHan
           network: cfg.network as never,
           payTo: cfg.payTo,
           // Price depends on the campaign's current bid and requested blocks.
-          price: (ctx) => {
+          price: async (ctx) => {
             const q = (name: string) => {
               const v = ctx.adapter.getQueryParam?.(name);
               return Array.isArray(v) ? v[0] : v;
             };
-            const micro = fundingPriceMicro(market, q("campaign"), q("blocks"));
+            const micro = await fundingPriceMicro(market, q("campaign"), q("blocks"));
             const usdc = usdcAsset(cfg.network);
             return {
               amount: String(micro),

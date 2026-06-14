@@ -1,8 +1,7 @@
-import type Database from "better-sqlite3";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { nanoid } from "nanoid";
 import type { Config } from "./config.js";
-import { getOrCreateSigningSecret } from "./db.js";
+import { getOrCreateSigningSecret, type Db } from "./db.js";
 import type { AdEvent, Campaign, Payment, Payout, Publisher, Report } from "./db.js";
 
 function sha256Hex(s: string): string {
@@ -20,72 +19,75 @@ export class Marketplace {
   private serveWeights = new Map<string, number>();
 
   constructor(
-    readonly db: Database.Database,
+    readonly db: Db,
     private cfg: Config,
   ) {}
 
   /** HMAC key for serve tokens (lazily resolved/persisted). */
-  signingSecret(): Buffer {
-    return (this.secret ??= getOrCreateSigningSecret(this.db, this.cfg.eventSigningSecret));
+  async signingSecret(): Promise<Buffer> {
+    return (this.secret ??= await getOrCreateSigningSecret(this.db, this.cfg.eventSigningSecret));
   }
 
   /** Whether an event with this idempotency key has already been recorded. */
-  hasEvent(key: string): boolean {
-    return this.db.prepare(`SELECT 1 FROM events WHERE key = ?`).get(key) !== undefined;
+  async hasEvent(key: string): Promise<boolean> {
+    return (await this.db.get(`SELECT 1 FROM events WHERE key = $1`, [key])) !== undefined;
   }
 
   // ---- content reports (DSA notice-and-action) ----
 
   /** Record a notice about hosted content. Returns the stored report. */
-  createReport(input: {
+  async createReport(input: {
     campaignId?: string | null;
     reason: string;
     details: string;
     reporter?: string | null;
-  }): Report {
+  }): Promise<Report> {
     const id = `rep_${nanoid(12)}`;
-    this.db
-      .prepare(
-        `INSERT INTO reports (id, campaign_id, reason, details, reporter, status, created_at)
-         VALUES (?, ?, ?, ?, ?, 'open', ?)`,
-      )
-      .run(id, input.campaignId ?? null, input.reason, input.details, input.reporter ?? null, Date.now());
-    return this.getReport(id)!;
+    await this.db.run(
+      `INSERT INTO reports (id, campaign_id, reason, details, reporter, status, created_at)
+       VALUES ($1, $2, $3, $4, $5, 'open', $6)`,
+      [id, input.campaignId ?? null, input.reason, input.details, input.reporter ?? null, Date.now()],
+    );
+    return (await this.getReport(id))!;
   }
 
-  getReport(id: string): Report | undefined {
-    return this.db.prepare(`SELECT * FROM reports WHERE id = ?`).get(id) as Report | undefined;
+  async getReport(id: string): Promise<Report | undefined> {
+    return this.db.get<Report>(`SELECT * FROM reports WHERE id = $1`, [id]);
   }
 
   /** Reports for the operator's review queue, newest first; filter by status. */
-  listReports(status?: Report["status"]): Report[] {
-    return (
-      status
-        ? this.db
-            .prepare(`SELECT * FROM reports WHERE status = ? ORDER BY created_at DESC`)
-            .all(status)
-        : this.db.prepare(`SELECT * FROM reports ORDER BY created_at DESC`).all()
-    ) as Report[];
+  async listReports(status?: Report["status"]): Promise<Report[]> {
+    return status
+      ? this.db.all<Report>(`SELECT * FROM reports WHERE status = $1 ORDER BY created_at DESC`, [status])
+      : this.db.all<Report>(`SELECT * FROM reports ORDER BY created_at DESC`);
   }
 
   /** Operator decision on a report: actioned (content removed/restricted) or dismissed. */
-  resolveReport(id: string, status: "actioned" | "dismissed", resolution?: string): Report | undefined {
-    const existing = this.getReport(id);
+  async resolveReport(
+    id: string,
+    status: "actioned" | "dismissed",
+    resolution?: string,
+  ): Promise<Report | undefined> {
+    const existing = await this.getReport(id);
     if (!existing) return undefined;
-    this.db
-      .prepare(`UPDATE reports SET status = ?, resolved_at = ?, resolution = ? WHERE id = ?`)
-      .run(status, Date.now(), resolution ?? null, id);
+    await this.db.run(
+      `UPDATE reports SET status = $1, resolved_at = $2, resolution = $3 WHERE id = $4`,
+      [status, Date.now(), resolution ?? null, id],
+    );
     return this.getReport(id);
   }
 
   /** Count of open reports — a cheap signal for the operator's review queue. */
-  openReportCount(): number {
-    return (this.db.prepare(`SELECT COUNT(*) AS n FROM reports WHERE status = 'open'`).get() as { n: number }).n;
+  async openReportCount(): Promise<number> {
+    const row = await this.db.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM reports WHERE status = 'open'`,
+    );
+    return row?.n ?? 0;
   }
 
   // ---- campaigns & auction ----
 
-  createCampaign(input: {
+  async createCampaign(input: {
     advertiser: string;
     label?: string | null;
     message: string;
@@ -93,7 +95,7 @@ export class Marketplace {
     bidPerBlockMicro: number;
     /** Lowercase SIWE wallet of the signed-in creator, when there is one. */
     ownerWallet?: string | null;
-  }): Campaign & { manageKey: string } {
+  }): Promise<Campaign & { manageKey: string }> {
     if (input.bidPerBlockMicro < this.cfg.minBidMicro) {
       throw new MarketError(
         `bid_per_block must be at least ${this.cfg.minBidMicro} micro-USD`,
@@ -129,31 +131,45 @@ export class Marketplace {
       // outbids the current leader (see tryActivate, called on fund/raise).
       activated_at: null,
     };
-    this.db
-      .prepare(
-        `INSERT INTO campaigns (id, advertiser, label, message, url, bid_per_block_micro, budget_micro, spent_micro, refunded_micro, status, created_at, manage_key_hash, owner_wallet, activated_at)
-         VALUES (@id, @advertiser, @label, @message, @url, @bid_per_block_micro, @budget_micro, @spent_micro, @refunded_micro, @status, @created_at, @manage_key_hash, @owner_wallet, @activated_at)`,
-      )
-      .run(campaign);
+    await this.db.run(
+      `INSERT INTO campaigns (id, advertiser, label, message, url, bid_per_block_micro, budget_micro, spent_micro, refunded_micro, status, created_at, manage_key_hash, owner_wallet, activated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+      [
+        campaign.id,
+        campaign.advertiser,
+        campaign.label,
+        campaign.message,
+        campaign.url,
+        campaign.bid_per_block_micro,
+        campaign.budget_micro,
+        campaign.spent_micro,
+        campaign.refunded_micro,
+        campaign.status,
+        campaign.created_at,
+        campaign.manage_key_hash,
+        campaign.owner_wallet,
+        campaign.activated_at,
+      ],
+    );
     return Object.assign(campaign, { manageKey });
   }
 
   /** Constant-time check of a manage key against the campaign's stored hash.
    *  Campaigns without a hash (house/legacy) are unmanageable over HTTP. */
-  verifyManageKey(campaignId: string, key: string | undefined): boolean {
-    const c = this.getCampaign(campaignId);
+  async verifyManageKey(campaignId: string, key: string | undefined): Promise<boolean> {
+    const c = await this.getCampaign(campaignId);
     if (!c?.manage_key_hash || !key) return false;
     const given = Buffer.from(sha256Hex(key), "hex");
     const want = Buffer.from(c.manage_key_hash, "hex");
     return given.length === want.length && timingSafeEqual(given, want);
   }
 
-  setCampaignStatus(id: string, status: "active" | "paused"): Campaign {
-    const c = this.mustGetCampaign(id);
+  async setCampaignStatus(id: string, status: "active" | "paused"): Promise<Campaign> {
+    const c = await this.mustGetCampaign(id);
     if (c.status === "cancelled") {
       throw new MarketError(`campaign ${id} is cancelled and cannot be ${status}`, 409);
     }
-    this.db.prepare(`UPDATE campaigns SET status = ? WHERE id = ?`).run(status, id);
+    await this.db.run(`UPDATE campaigns SET status = $1 WHERE id = $2`, [status, id]);
     return this.mustGetCampaign(id);
   }
 
@@ -162,58 +178,53 @@ export class Marketplace {
    * can never serve, be resumed, or accept funding again. The unspent escrow
    * stays withdrawable via requestRefund.
    */
-  cancelCampaign(id: string): Campaign {
-    const c = this.mustGetCampaign(id);
+  async cancelCampaign(id: string): Promise<Campaign> {
+    const c = await this.mustGetCampaign(id);
     if (c.status === "cancelled") {
       throw new MarketError(`campaign ${id} is already cancelled`, 409);
     }
-    this.db.prepare(`UPDATE campaigns SET status = 'cancelled' WHERE id = ?`).run(id);
+    await this.db.run(`UPDATE campaigns SET status = 'cancelled' WHERE id = $1`, [id]);
     return this.mustGetCampaign(id);
   }
 
-  getCampaign(id: string): Campaign | undefined {
-    return this.db.prepare(`SELECT * FROM campaigns WHERE id = ?`).get(id) as
-      | Campaign
-      | undefined;
+  async getCampaign(id: string): Promise<Campaign | undefined> {
+    return this.db.get<Campaign>(`SELECT * FROM campaigns WHERE id = $1`, [id]);
   }
 
-  listCampaigns(advertiser?: string): Campaign[] {
+  async listCampaigns(advertiser?: string): Promise<Campaign[]> {
     if (advertiser) {
-      return this.db
-        .prepare(`SELECT * FROM campaigns WHERE advertiser = ? ORDER BY created_at DESC`)
-        .all(advertiser) as Campaign[];
+      return this.db.all<Campaign>(
+        `SELECT * FROM campaigns WHERE advertiser = $1 ORDER BY created_at DESC`,
+        [advertiser],
+      );
     }
-    return this.db
-      .prepare(`SELECT * FROM campaigns ORDER BY created_at DESC`)
-      .all() as Campaign[];
+    return this.db.all<Campaign>(`SELECT * FROM campaigns ORDER BY created_at DESC`);
   }
 
   /** Every campaign a signed-in wallet created — the cross-browser "mine" list. */
-  listCampaignsByOwner(ownerWallet: string): Campaign[] {
-    return this.db
-      .prepare(`SELECT * FROM campaigns WHERE owner_wallet = ? ORDER BY created_at DESC`)
-      .all(ownerWallet) as Campaign[];
+  async listCampaignsByOwner(ownerWallet: string): Promise<Campaign[]> {
+    return this.db.all<Campaign>(
+      `SELECT * FROM campaigns WHERE owner_wallet = $1 ORDER BY created_at DESC`,
+      [ownerWallet],
+    );
   }
 
   /** The board name is an account-level setting: saving it renames the
    *  account's campaigns too, so the public board stays coherent. */
-  relabelOwnedCampaigns(ownerWallet: string, label: string | null): void {
-    this.db
-      .prepare(`UPDATE campaigns SET label = ? WHERE owner_wallet = ?`)
-      .run(label, ownerWallet);
+  async relabelOwnedCampaigns(ownerWallet: string, label: string | null): Promise<void> {
+    await this.db.run(`UPDATE campaigns SET label = $1 WHERE owner_wallet = $2`, [label, ownerWallet]);
   }
 
-  campaignStats(id: string) {
-    const c = this.mustGetCampaign(id);
-    const row = this.db
-      .prepare(
-        `SELECT
-           COUNT(CASE WHEN type = 'impression' THEN 1 END) AS impressions,
-           COUNT(CASE WHEN type = 'click' THEN 1 END) AS clicks,
-           COUNT(DISTINCT publisher) AS publishers
-         FROM events WHERE campaign_id = ?`,
-      )
-      .get(id) as { impressions: number; clicks: number; publishers: number };
+  async campaignStats(id: string) {
+    const c = await this.mustGetCampaign(id);
+    const row = (await this.db.get<{ impressions: number; clicks: number; publishers: number }>(
+      `SELECT
+         COUNT(CASE WHEN type = 'impression' THEN 1 END) AS impressions,
+         COUNT(CASE WHEN type = 'click' THEN 1 END) AS clicks,
+         COUNT(DISTINCT publisher) AS publishers
+       FROM events WHERE campaign_id = $1`,
+      [id],
+    ))!;
     return {
       campaignId: c.id,
       impressions: row.impressions,
@@ -228,8 +239,8 @@ export class Marketplace {
   }
 
   /** English ascending auction: a raise must beat your own bid by the minimum increment. */
-  raiseBid(id: string, newBidMicro: number): Campaign {
-    const c = this.mustGetCampaign(id);
+  async raiseBid(id: string, newBidMicro: number): Promise<Campaign> {
+    const c = await this.mustGetCampaign(id);
     if (c.status === "cancelled") {
       throw new MarketError(`campaign ${id} is cancelled`, 409);
     }
@@ -239,24 +250,22 @@ export class Marketplace {
         400,
       );
     }
-    this.db
-      .prepare(`UPDATE campaigns SET bid_per_block_micro = ? WHERE id = ?`)
-      .run(newBidMicro, id);
+    await this.db.run(`UPDATE campaigns SET bid_per_block_micro = $1 WHERE id = $2`, [newBidMicro, id]);
     // A funded-but-not-yet-serving campaign can raise its way past the leader
     // and into the pool. An already-serving one just keeps its place.
-    this.tryActivate(this.mustGetCampaign(id));
+    await this.tryActivate(await this.mustGetCampaign(id));
     return this.mustGetCampaign(id);
   }
 
   /** Credit escrowed budget after a settled payment (x402 / mock / mpp). */
-  fundCampaign(input: {
+  async fundCampaign(input: {
     campaignId: string;
     payer: string;
     amountMicro: number;
     rail: string;
     tx?: string;
-  }): { campaign: Campaign; payment: Payment } {
-    const c = this.mustGetCampaign(input.campaignId);
+  }): Promise<{ campaign: Campaign; payment: Payment }> {
+    const c = await this.mustGetCampaign(input.campaignId);
     if (c.status === "cancelled") {
       throw new MarketError(`campaign ${c.id} is cancelled and no longer accepts funding`, 409);
     }
@@ -270,22 +279,22 @@ export class Marketplace {
       tx: input.tx ?? null,
       created_at: Date.now(),
     };
-    const insert = this.db.prepare(
-      `INSERT INTO payments (id, campaign_id, payer, amount_micro, rail, tx, created_at)
-       VALUES (@id, @campaign_id, @payer, @amount_micro, @rail, @tx, @created_at)`,
-    );
-    const credit = this.db.prepare(
-      `UPDATE campaigns SET budget_micro = budget_micro + ? WHERE id = ?`,
-    );
-    this.db.transaction(() => {
-      insert.run(payment);
-      credit.run(input.amountMicro, c.id);
-    })();
+    await this.db.tx(async (t) => {
+      await t.run(
+        `INSERT INTO payments (id, campaign_id, payer, amount_micro, rail, tx, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [payment.id, payment.campaign_id, payment.payer, payment.amount_micro, payment.rail, payment.tx, payment.created_at],
+      );
+      await t.run(`UPDATE campaigns SET budget_micro = budget_micro + $1 WHERE id = $2`, [
+        input.amountMicro,
+        c.id,
+      ]);
+    });
     // Funding is the moment a campaign can enter the auction: admit it if it now
     // outbids the leader (or the pool is empty). If it can't, it stays funded
     // but unserved until it raises past the top — being funded is not enough.
-    this.tryActivate(this.mustGetCampaign(c.id));
-    return { campaign: this.mustGetCampaign(c.id), payment };
+    await this.tryActivate(await this.mustGetCampaign(c.id));
+    return { campaign: await this.mustGetCampaign(c.id), payment };
   }
 
   impressionCostMicro(c: Campaign): number {
@@ -308,14 +317,12 @@ export class Marketplace {
    * campaign — only an explicit pause/cancel or running out of budget does. The
    * whole admitted pool serves; bids decide share, not exclusivity.
    */
-  eligible(): Campaign[] {
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM campaigns
-         WHERE status = 'active' AND activated_at IS NOT NULL AND budget_micro - spent_micro > 0
-         ORDER BY bid_per_block_micro DESC, created_at ASC`,
-      )
-      .all() as Campaign[];
+  async eligible(): Promise<Campaign[]> {
+    const rows = await this.db.all<Campaign>(
+      `SELECT * FROM campaigns
+       WHERE status = 'active' AND activated_at IS NOT NULL AND budget_micro - spent_micro > 0
+       ORDER BY bid_per_block_micro DESC, created_at ASC`,
+    );
     return rows.filter((c) => this.remainingMicro(c) >= this.impressionCostMicro(c));
   }
 
@@ -324,9 +331,9 @@ export class Marketplace {
    * admission candidate). 0 when the pool is otherwise empty — so the first
    * funded bid always clears the bar.
    */
-  private topServingBidMicro(excludeId: string): number {
+  private async topServingBidMicro(excludeId: string): Promise<number> {
     let top = 0;
-    for (const c of this.eligible()) {
+    for (const c of await this.eligible()) {
       if (c.id === excludeId) continue;
       if (c.bid_per_block_micro > top) top = c.bid_per_block_micro;
     }
@@ -341,12 +348,12 @@ export class Marketplace {
    * entrant; they leave only via pause/cancel/budget-exhaustion. Returns true if
    * the campaign just became active.
    */
-  private tryActivate(c: Campaign): boolean {
+  private async tryActivate(c: Campaign): Promise<boolean> {
     if (c.status !== "active" || c.activated_at) return false;
     if (this.remainingMicro(c) < this.impressionCostMicro(c)) return false; // unfunded: never serves
-    if (c.bid_per_block_micro <= this.topServingBidMicro(c.id)) return false; // didn't outbid the leader
+    if (c.bid_per_block_micro <= (await this.topServingBidMicro(c.id))) return false; // didn't outbid the leader
     const now = Date.now();
-    this.db.prepare(`UPDATE campaigns SET activated_at = ? WHERE id = ?`).run(now, c.id);
+    await this.db.run(`UPDATE campaigns SET activated_at = $1 WHERE id = $2`, [now, c.id]);
     c.activated_at = now;
     return true;
   }
@@ -356,8 +363,8 @@ export class Marketplace {
    * longer monopolises serving — it's the top of the rotation, used for the
    * board's ranking and as the headline price.
    */
-  winner(): Campaign | undefined {
-    return this.eligible()[0];
+  async winner(): Promise<Campaign | undefined> {
+    return (await this.eligible())[0];
   }
 
   /**
@@ -367,8 +374,8 @@ export class Marketplace {
    * a $5 bid is served ~5x as often as a $1 bid, but the $1 campaign still
    * gets its turns — it is never suspended for being outbid.
    */
-  pickServe(): Campaign | undefined {
-    const pool = this.eligible();
+  async pickServe(): Promise<Campaign | undefined> {
+    const pool = await this.eligible();
     if (pool.length <= 1) return pool[0];
 
     // Forget campaigns that have left the pool so their weight can't grow stale.
@@ -396,23 +403,28 @@ export class Marketplace {
   /**
    * Public auction board: ranked queue with remaining budget. Wallets stay
    * private — the board identifies advertisers by their chosen label only.
-   * `serving` reflects the admission gate: a funded campaign that hasn't yet
-   * outbid the leader appears on the board but with serving=false.
+   * Only funded campaigns appear: one that can't afford a single impression
+   * (never funded, or budget exhausted) is left off the board entirely — the
+   * same "unfunded" gate used by `eligible`/`tryActivate`. `serving` then
+   * reflects the admission gate: a funded campaign that hasn't yet outbid the
+   * leader still appears on the board but with serving=false.
    */
-  auctionState() {
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM campaigns WHERE status = 'active'
-         ORDER BY bid_per_block_micro DESC, created_at ASC`,
-      )
-      .all() as Campaign[];
-    const serving = new Set(this.eligible().map((c) => c.id));
+  async auctionState() {
+    const all = await this.db.all<Campaign>(
+      `SELECT * FROM campaigns WHERE status = 'active'
+       ORDER BY bid_per_block_micro DESC, created_at ASC`,
+    );
+    const rows = all.filter((c) => this.remainingMicro(c) >= this.impressionCostMicro(c));
+    const serving = new Set((await this.eligible()).map((c) => c.id));
     return rows.map((c, i) => ({
       rank: i + 1,
       campaignId: c.id,
       advertiser: c.label ?? "anonymous",
       message: c.message,
+      url: c.url,
       bidPerBlockMicro: c.bid_per_block_micro,
+      budgetMicro: c.budget_micro,
+      spentMicro: c.spent_micro,
       remainingMicro: this.remainingMicro(c),
       serving: serving.has(c.id),
     }));
@@ -425,14 +437,14 @@ export class Marketplace {
    * event key. Debits the campaign and credits the publisher their share.
    * Returns the event, or undefined when the key was already seen.
    */
-  recordEvent(input: {
+  async recordEvent(input: {
     key: string;
     type: "impression" | "click";
     campaignId: string;
     publisher: string;
     surface: string;
-  }): AdEvent | undefined {
-    const c = this.mustGetCampaign(input.campaignId);
+  }): Promise<AdEvent | undefined> {
+    const c = await this.mustGetCampaign(input.campaignId);
     const fullCost =
       input.type === "impression" ? this.impressionCostMicro(c) : this.clickCostMicro(c);
     // A nearly-exhausted budget still pays out what's left rather than serving free.
@@ -451,60 +463,67 @@ export class Marketplace {
       created_at: Date.now(),
     };
 
-    const insertEvent = this.db.prepare(
-      `INSERT OR IGNORE INTO events (key, type, campaign_id, publisher, surface, amount_micro, publisher_micro, created_at)
-       VALUES (@key, @type, @campaign_id, @publisher, @surface, @amount_micro, @publisher_micro, @created_at)`,
-    );
-    const debit = this.db.prepare(`UPDATE campaigns SET spent_micro = spent_micro + ? WHERE id = ?`);
-    const credit = this.db.prepare(
-      `INSERT INTO publishers (wallet, earned_micro, paid_micro) VALUES (?, ?, 0)
-       ON CONFLICT(wallet) DO UPDATE SET earned_micro = earned_micro + excluded.earned_micro`,
-    );
+    return this.db.tx(async (t) => {
+      // Idempotency: the event key is the primary key, but check explicitly so
+      // a duplicate is a clean no-op (and so the debit/credit never run twice)
+      // rather than relying on ON CONFLICT row counts.
+      const dup = await t.get(`SELECT 1 FROM events WHERE key = $1`, [event.key]);
+      if (dup) return undefined;
 
-    const dropFromPool = this.db.prepare(
-      `UPDATE campaigns SET activated_at = NULL WHERE id = ?`,
-    );
-
-    let inserted = false;
-    this.db.transaction(() => {
-      const res = insertEvent.run(event);
-      if (res.changes === 0) return; // duplicate key: no-op
-      inserted = true;
-      debit.run(cost, c.id);
-      credit.run(input.publisher, publisherMicro);
+      await t.run(
+        `INSERT INTO events (key, type, campaign_id, publisher, surface, amount_micro, publisher_micro, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          event.key,
+          event.type,
+          event.campaign_id,
+          event.publisher,
+          event.surface,
+          event.amount_micro,
+          event.publisher_micro,
+          event.created_at,
+        ],
+      );
+      await t.run(`UPDATE campaigns SET spent_micro = spent_micro + $1 WHERE id = $2`, [cost, c.id]);
+      await t.run(
+        `INSERT INTO publishers (wallet, earned_micro, paid_micro) VALUES ($1, $2, 0)
+         ON CONFLICT(wallet) DO UPDATE SET earned_micro = publishers.earned_micro + excluded.earned_micro`,
+        [input.publisher, publisherMicro],
+      );
       // If this debit exhausted the budget, the campaign leaves the pool. It
       // is no longer "a campaign that was active" — re-funding it later must
       // outbid the leader again to re-enter, same as any new entrant.
-      if (this.remainingMicro(this.mustGetCampaign(c.id)) < this.impressionCostMicro(c)) {
-        dropFromPool.run(c.id);
+      const after = (await t.get<Campaign>(`SELECT * FROM campaigns WHERE id = $1`, [c.id]))!;
+      if (this.remainingMicro(after) < this.impressionCostMicro(after)) {
+        await t.run(`UPDATE campaigns SET activated_at = NULL WHERE id = $1`, [c.id]);
       }
-    })();
-    return inserted ? event : undefined;
+      return event;
+    });
   }
 
   /** Impression/click counts for one (publisher, campaign) pair — the basis
    *  of the click-ratio cap. */
-  publisherCampaignCounts(publisher: string, campaignId: string): { impressions: number; clicks: number } {
-    return this.db
-      .prepare(
-        `SELECT
-           COUNT(CASE WHEN type = 'impression' THEN 1 END) AS impressions,
-           COUNT(CASE WHEN type = 'click' THEN 1 END) AS clicks
-         FROM events WHERE publisher = ? AND campaign_id = ?`,
-      )
-      .get(publisher, campaignId) as { impressions: number; clicks: number };
+  async publisherCampaignCounts(
+    publisher: string,
+    campaignId: string,
+  ): Promise<{ impressions: number; clicks: number }> {
+    return (await this.db.get<{ impressions: number; clicks: number }>(
+      `SELECT
+         COUNT(CASE WHEN type = 'impression' THEN 1 END) AS impressions,
+         COUNT(CASE WHEN type = 'click' THEN 1 END) AS clicks
+       FROM events WHERE publisher = $1 AND campaign_id = $2`,
+      [publisher, campaignId],
+    ))!;
   }
 
-  getPublisher(wallet: string): Publisher {
-    const row = this.db.prepare(`SELECT * FROM publishers WHERE wallet = ?`).get(wallet) as
-      | Publisher
-      | undefined;
+  async getPublisher(wallet: string): Promise<Publisher> {
+    const row = await this.db.get<Publisher>(`SELECT * FROM publishers WHERE wallet = $1`, [wallet]);
     return row ?? { wallet, earned_micro: 0, paid_micro: 0 };
   }
 
   /** Withdrawable balance for a publisher. */
-  balanceMicro(wallet: string): number {
-    const p = this.getPublisher(wallet);
+  async balanceMicro(wallet: string): Promise<number> {
+    const p = await this.getPublisher(wallet);
     return p.earned_micro - p.paid_micro;
   }
 
@@ -512,8 +531,8 @@ export class Marketplace {
    * Create a payout for the full withdrawable balance. The caller is
    * responsible for actually moving USDC and then marking sent/failed.
    */
-  requestPayout(wallet: string): Payout {
-    const balance = this.balanceMicro(wallet);
+  async requestPayout(wallet: string): Promise<Payout> {
+    const balance = await this.balanceMicro(wallet);
     if (balance < this.cfg.minPayoutMicro) {
       throw new MarketError(
         `balance ${balance} micro-USD below payout threshold ${this.cfg.minPayoutMicro}`,
@@ -530,17 +549,14 @@ export class Marketplace {
       tx: null,
       created_at: Date.now(),
     };
-    const insert = this.db.prepare(
-      `INSERT INTO payouts (id, wallet, amount_micro, status, kind, campaign_id, tx, created_at)
-       VALUES (@id, @wallet, @amount_micro, @status, @kind, @campaign_id, @tx, @created_at)`,
-    );
-    const markPaid = this.db.prepare(
-      `UPDATE publishers SET paid_micro = paid_micro + ? WHERE wallet = ?`,
-    );
-    this.db.transaction(() => {
-      insert.run(payout);
-      markPaid.run(balance, wallet);
-    })();
+    await this.db.tx(async (t) => {
+      await t.run(
+        `INSERT INTO payouts (id, wallet, amount_micro, status, kind, campaign_id, tx, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [payout.id, payout.wallet, payout.amount_micro, payout.status, payout.kind, payout.campaign_id, payout.tx, payout.created_at],
+      );
+      await t.run(`UPDATE publishers SET paid_micro = paid_micro + $1 WHERE wallet = $2`, [balance, wallet]);
+    });
     return payout;
   }
 
@@ -550,8 +566,8 @@ export class Marketplace {
    * same debit-first discipline as publisher payouts, so a crash mid-send can
    * never refund twice. No minimum: it's the advertiser's money.
    */
-  requestRefund(campaignId: string, toWallet: string): Payout {
-    const c = this.mustGetCampaign(campaignId);
+  async requestRefund(campaignId: string, toWallet: string): Promise<Payout> {
+    const c = await this.mustGetCampaign(campaignId);
     if (c.status !== "cancelled") {
       throw new MarketError("cancel the campaign before withdrawing its escrow", 409);
     }
@@ -569,38 +585,36 @@ export class Marketplace {
       tx: null,
       created_at: Date.now(),
     };
-    const insert = this.db.prepare(
-      `INSERT INTO payouts (id, wallet, amount_micro, status, kind, campaign_id, tx, created_at)
-       VALUES (@id, @wallet, @amount_micro, @status, @kind, @campaign_id, @tx, @created_at)`,
-    );
-    const debit = this.db.prepare(
-      `UPDATE campaigns SET refunded_micro = refunded_micro + ? WHERE id = ?`,
-    );
-    this.db.transaction(() => {
-      insert.run(payout);
-      debit.run(remaining, c.id);
-    })();
+    await this.db.tx(async (t) => {
+      await t.run(
+        `INSERT INTO payouts (id, wallet, amount_micro, status, kind, campaign_id, tx, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [payout.id, payout.wallet, payout.amount_micro, payout.status, payout.kind, payout.campaign_id, payout.tx, payout.created_at],
+      );
+      await t.run(`UPDATE campaigns SET refunded_micro = refunded_micro + $1 WHERE id = $2`, [remaining, c.id]);
+    });
     return payout;
   }
 
   /** Refund payouts issued for a campaign — the owner's withdrawal history. */
-  listCampaignPayouts(campaignId: string): Payout[] {
-    return this.db
-      .prepare(`SELECT * FROM payouts WHERE campaign_id = ? ORDER BY created_at DESC`)
-      .all(campaignId) as Payout[];
+  async listCampaignPayouts(campaignId: string): Promise<Payout[]> {
+    return this.db.all<Payout>(
+      `SELECT * FROM payouts WHERE campaign_id = $1 ORDER BY created_at DESC`,
+      [campaignId],
+    );
   }
 
-  getPayout(id: string): Payout | undefined {
-    return this.db.prepare(`SELECT * FROM payouts WHERE id = ?`).get(id) as Payout | undefined;
+  async getPayout(id: string): Promise<Payout | undefined> {
+    return this.db.get<Payout>(`SELECT * FROM payouts WHERE id = $1`, [id]);
   }
 
   /** Record that the payout transaction was broadcast (receipt still unknown). */
-  markPayoutSubmitted(id: string, tx: string): void {
-    const payout = this.mustGetPayout(id);
+  async markPayoutSubmitted(id: string, tx: string): Promise<void> {
+    const payout = await this.mustGetPayout(id);
     if (payout.status !== "queued") {
       throw new MarketError(`payout ${id} is ${payout.status}, expected queued`, 409);
     }
-    this.db.prepare(`UPDATE payouts SET status = 'submitted', tx = ? WHERE id = ?`).run(tx, id);
+    await this.db.run(`UPDATE payouts SET status = 'submitted', tx = $1 WHERE id = $2`, [tx, id]);
   }
 
   /**
@@ -610,51 +624,49 @@ export class Marketplace {
    * withdraw again, e.g. to a corrected wallet). Already-terminal payouts
    * cannot transition again — that's what makes a refund single-shot.
    */
-  resolvePayout(id: string, status: "sent" | "failed", tx?: string): void {
-    const payout = this.mustGetPayout(id);
+  async resolvePayout(id: string, status: "sent" | "failed", tx?: string): Promise<void> {
+    const payout = await this.mustGetPayout(id);
     if (payout.status === "sent" || payout.status === "failed") {
       throw new MarketError(`payout ${id} already resolved as ${payout.status}`, 409);
     }
-    const update = this.db.prepare(`UPDATE payouts SET status = ?, tx = ? WHERE id = ?`);
-    const refundEarnings = this.db.prepare(
-      `UPDATE publishers SET paid_micro = paid_micro - ? WHERE wallet = ?`,
-    );
-    const refundEscrow = this.db.prepare(
-      `UPDATE campaigns SET refunded_micro = refunded_micro - ? WHERE id = ?`,
-    );
-    this.db.transaction(() => {
-      update.run(status, tx ?? payout.tx, id);
+    await this.db.tx(async (t) => {
+      await t.run(`UPDATE payouts SET status = $1, tx = $2 WHERE id = $3`, [status, tx ?? payout.tx, id]);
       if (status === "failed") {
-        if (payout.kind === "refund") refundEscrow.run(payout.amount_micro, payout.campaign_id);
-        else refundEarnings.run(payout.amount_micro, payout.wallet);
+        if (payout.kind === "refund") {
+          await t.run(`UPDATE campaigns SET refunded_micro = refunded_micro - $1 WHERE id = $2`, [
+            payout.amount_micro,
+            payout.campaign_id,
+          ]);
+        } else {
+          await t.run(`UPDATE publishers SET paid_micro = paid_micro - $1 WHERE wallet = $2`, [
+            payout.amount_micro,
+            payout.wallet,
+          ]);
+        }
       }
-    })();
+    });
   }
 
-  listPayouts(wallet: string): Payout[] {
-    return this.db
-      .prepare(`SELECT * FROM payouts WHERE wallet = ? ORDER BY created_at DESC`)
-      .all(wallet) as Payout[];
+  async listPayouts(wallet: string): Promise<Payout[]> {
+    return this.db.all<Payout>(`SELECT * FROM payouts WHERE wallet = $1 ORDER BY created_at DESC`, [wallet]);
   }
 
   /** Operator view: every payout, optionally filtered by status. */
-  listAllPayouts(status?: Payout["status"]): Payout[] {
+  async listAllPayouts(status?: Payout["status"]): Promise<Payout[]> {
     if (status) {
-      return this.db
-        .prepare(`SELECT * FROM payouts WHERE status = ? ORDER BY created_at DESC`)
-        .all(status) as Payout[];
+      return this.db.all<Payout>(`SELECT * FROM payouts WHERE status = $1 ORDER BY created_at DESC`, [status]);
     }
-    return this.db.prepare(`SELECT * FROM payouts ORDER BY created_at DESC`).all() as Payout[];
+    return this.db.all<Payout>(`SELECT * FROM payouts ORDER BY created_at DESC`);
   }
 
-  private mustGetPayout(id: string): Payout {
-    const p = this.getPayout(id);
+  private async mustGetPayout(id: string): Promise<Payout> {
+    const p = await this.getPayout(id);
     if (!p) throw new MarketError("payout not found", 404);
     return p;
   }
 
-  private mustGetCampaign(id: string): Campaign {
-    const c = this.getCampaign(id);
+  private async mustGetCampaign(id: string): Promise<Campaign> {
+    const c = await this.getCampaign(id);
     if (!c) throw new MarketError(`campaign ${id} not found`, 404);
     return c;
   }

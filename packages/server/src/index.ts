@@ -4,13 +4,13 @@ import { Marketplace } from "./marketplace.js";
 import { buildApp } from "./routes.js";
 
 const cfg = loadConfig();
-const db = openDb(cfg.dbPath);
+const db = await openDb(cfg.databaseUrl);
 const market = new Marketplace(db, cfg);
 
 // Bootstrap inventory with house ads so publishers see fill from minute one —
 // but only on the mock rail. On the real rail publisher earnings are real
 // USDC liabilities, so unfunded house inventory would pay out of the treasury.
-if (cfg.paymentsMode === "mock") seedHouseAds(market);
+if (cfg.paymentsMode === "mock") await seedHouseAds(market);
 
 const app = await buildApp(cfg, market);
 const server = app.listen(cfg.port, () => {
@@ -33,8 +33,7 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) {
     shuttingDown = true;
     console.log(JSON.stringify({ evt: "shutdown", signal: sig }));
     server.close(() => {
-      db.close();
-      process.exit(0);
+      void db.close().finally(() => process.exit(0));
     });
     // Idle keep-alive sockets would hold close() open forever; drop them now
     // and give in-flight requests a short grace before the hard stop.
@@ -44,8 +43,8 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) {
   });
 }
 
-function seedHouseAds(m: Marketplace) {
-  if (m.auctionState().length > 0) return;
+async function seedHouseAds(m: Marketplace) {
+  if ((await m.auctionState()).length > 0) return;
   const seeds = [
     {
       message: "Codevertise: this status line is for rent — paid in USDC over HTTP 402",
@@ -61,7 +60,7 @@ function seedHouseAds(m: Marketplace) {
     },
   ];
   for (const s of seeds) {
-    const c = m.createCampaign({
+    const c = await m.createCampaign({
       advertiser: "house",
       label: "codevertise",
       message: s.message,
@@ -69,7 +68,7 @@ function seedHouseAds(m: Marketplace) {
       bidPerBlockMicro: Math.round(s.bidUsd * USD),
     });
     // House budget is bookkeeping only; no real funds move on the mock rail.
-    m.fundCampaign({ campaignId: c.id, payer: "house", amountMicro: 5 * USD, rail: "mock" });
+    await m.fundCampaign({ campaignId: c.id, payer: "house", amountMicro: 5 * USD, rail: "mock" });
   }
   console.log("seeded 2 house campaigns");
 }

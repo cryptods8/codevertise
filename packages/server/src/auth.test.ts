@@ -26,7 +26,7 @@ afterEach(async () => {
 
 async function start(overrides: Partial<Config> = {}): Promise<Harness> {
   const cfg: Config = { ...loadConfig({} as NodeJS.ProcessEnv), ...overrides };
-  const market = new Marketplace(openDb(":memory:"), cfg);
+  const market = new Marketplace(await openDb(), cfg);
   const app = await buildApp(cfg, market);
   const server = await new Promise<import("node:http").Server>((resolve) => {
     const s = app.listen(0, () => resolve(s));
@@ -182,7 +182,7 @@ describe("session-owned campaigns", () => {
     const { cookie } = await signIn(h, account);
     const created = await send(h, "POST", "/v1/campaigns", CREATIVE, cookie);
     const id = created.body.campaign.id;
-    h.market.fundCampaign({ campaignId: id, payer: "test", amountMicro: 5 * USD, rail: "mock" });
+    await h.market.fundCampaign({ campaignId: id, payer: "test", amountMicro: 5 * USD, rail: "mock" });
 
     const cancelled = await send(h, "POST", `/v1/campaigns/${id}/cancel`, {}, cookie);
     expect(cancelled.status).toBe(200);

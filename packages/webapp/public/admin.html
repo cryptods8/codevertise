@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0b0e14" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Codevertise — operator console</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
+  <link rel="stylesheet" href="/style.css" />
+  <style>
+    /* admin-only chrome on top of the shared theme */
+    .admin-wrap { max-width: 1100px; margin: 0 auto; padding: 20px 16px 64px; }
+    .admin-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+    .admin-head h1 { font-size: 20px; margin: 0; letter-spacing: 1px; }
+    .admin-head .logo { color: var(--accent); }
+    #gate { max-width: 420px; margin: 64px auto; }
+    #gate .row { display: flex; gap: 8px; margin-top: 10px; }
+    #gate input { flex: 1; }
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 18px; }
+    .stat { border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; background: var(--panel); }
+    .stat .n { font-size: 22px; font-family: var(--mono); }
+    .stat .l { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-top: 2px; }
+    .stat.alert .n { color: var(--amber); }
+    section.panel { margin-bottom: 20px; }
+    .tab-row { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 12px; }
+    .tab-row button { font-size: 12px; padding: 5px 12px; }
+    .tab-row button[aria-pressed="true"] { background: var(--accent); color: #06121c; }
+    table .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    table .actions button { font-size: 11px; padding: 4px 9px; }
+    .st { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+    .st-active, .st-sent { color: var(--green); }
+    .st-paused, .st-queued, .st-submitted, .st-open { color: var(--amber); }
+    .st-cancelled, .st-failed { color: #ff7b7b; }
+    .st-actioned, .st-dismissed { color: var(--muted); }
+    .muted { color: var(--muted); }
+    .wrap-text { white-space: normal; max-width: 360px; }
+    #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 50; }
+    #toast div { margin-top: 6px; padding: 9px 14px; border-radius: 6px; font-size: 13px; border: 1px solid var(--border); background: var(--panel-2); }
+    #toast div.err { border-color: #5a2a2a; color: #ff9b9b; }
+    #toast div.ok { border-color: var(--green); color: var(--green); }
+    .empty-row td { color: var(--muted); font-style: italic; }
+    code.mono { font-size: 12px; }
+  </style>
+</head>
+<body>
+  <!-- token gate -->
+  <div id="gate" class="panel" hidden>
+    <h2>operator sign-in</h2>
+    <p class="hint">Paste the server's <code>ADMIN_TOKEN</code>. It is kept in this tab only (sessionStorage) and sent as the <code>x-admin-token</code> header.</p>
+    <div class="row">
+      <input id="token-input" type="password" placeholder="admin token" autocomplete="off" />
+      <button id="token-go" class="primary">unlock</button>
+    </div>
+    <p id="gate-err" class="hint" style="color:#ff9b9b" hidden></p>
+  </div>
+
+  <!-- console -->
+  <main id="console" class="admin-wrap" hidden>
+    <div class="admin-head">
+      <h1><span class="logo">▰</span> codevertise operator</h1>
+      <div>
+        <button id="refresh" class="ghost">refresh</button>
+        <button id="lock" class="link-btn">lock</button>
+      </div>
+    </div>
+
+    <div class="stat-grid" id="stats"></div>
+
+    <section class="panel">
+      <h2>campaigns</h2>
+      <div class="tab-row" id="camp-tabs">
+        <button data-status="" aria-pressed="true">all</button>
+        <button data-status="active">active</button>
+        <button data-status="paused">paused</button>
+        <button data-status="cancelled">cancelled</button>
+      </div>
+      <table>
+        <thead><tr><th>campaign</th><th>advertiser</th><th>bid/block</th><th>remaining</th><th>status</th><th></th></tr></thead>
+        <tbody id="camp-body"></tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>content reports</h2>
+      <div class="tab-row" id="rep-tabs">
+        <button data-status="open" aria-pressed="true">open</button>
+        <button data-status="">all</button>
+        <button data-status="actioned">actioned</button>
+        <button data-status="dismissed">dismissed</button>
+      </div>
+      <table>
+        <thead><tr><th>reason</th><th>details</th><th>campaign</th><th>status</th><th></th></tr></thead>
+        <tbody id="rep-body"></tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>payouts</h2>
+      <div class="tab-row" id="pay-tabs">
+        <button data-status="" aria-pressed="true">all</button>
+        <button data-status="queued">queued</button>
+        <button data-status="submitted">submitted</button>
+        <button data-status="sent">sent</button>
+        <button data-status="failed">failed</button>
+      </div>
+      <table>
+        <thead><tr><th>id</th><th>kind</th><th>wallet</th><th>amount</th><th>status</th><th></th></tr></thead>
+        <tbody id="pay-body"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <div id="toast" aria-live="polite"></div>
+
+  <script>
+    const USD = 1_000_000;
+    const $ = (s) => document.querySelector(s);
+    const fmt = (m) => `$${(Number(m) / USD).toFixed(2)}`;
+    const esc = (s) =>
+      String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    const short = (w) => (w && w.length > 14 ? `${w.slice(0, 8)}…${w.slice(-4)}` : w ?? "—");
+
+    const TOKEN_KEY = "cv_admin_token";
+    let token = sessionStorage.getItem(TOKEN_KEY) || "";
+    const campState = { status: "" };
+    const repState = { status: "open" };
+    const payState = { status: "" };
+
+    function toast(msg, kind = "ok") {
+      const d = document.createElement("div");
+      d.className = kind;
+      d.textContent = msg;
+      $("#toast").appendChild(d);
+      setTimeout(() => d.remove(), 3600);
+    }
+
+    async function api(path, opts = {}) {
+      const res = await fetch(path, {
+        ...opts,
+        headers: { "x-admin-token": token, "content-type": "application/json", ...(opts.headers || {}) },
+      });
+      const body = await res.json().catch(() => ({}));
+      return { status: res.status, ok: res.ok, body };
+    }
+
+    // ---- gate ----
+    function showGate(err) {
+      $("#console").hidden = true;
+      $("#gate").hidden = false;
+      $("#gate-err").hidden = !err;
+      if (err) $("#gate-err").textContent = err;
+      $("#token-input").focus();
+    }
+    function showConsole() {
+      $("#gate").hidden = true;
+      $("#console").hidden = false;
+    }
+
+    async function unlock(candidate) {
+      token = candidate;
+      const probe = await api("/v1/admin/overview");
+      if (probe.status === 200) {
+        sessionStorage.setItem(TOKEN_KEY, token);
+        showConsole();
+        renderOverview(probe.body);
+        await Promise.all([loadCampaigns(), loadReports(), loadPayouts()]);
+        return;
+      }
+      sessionStorage.removeItem(TOKEN_KEY);
+      token = "";
+      if (probe.status === 404) showGate("admin surface is disabled — start the server with ADMIN_TOKEN set.");
+      else showGate("that token was rejected.");
+    }
+
+    // ---- overview ----
+    function renderOverview(o) {
+      const c = o.campaigns || {};
+      const cells = [
+        { n: c.total ?? 0, l: "campaigns" },
+        { n: c.serving ?? 0, l: "serving" },
+        { n: c.active ?? 0, l: "active" },
+        { n: c.paused ?? 0, l: "paused" },
+        { n: c.cancelled ?? 0, l: "cancelled" },
+        { n: o.reports?.open ?? 0, l: "open reports", alert: (o.reports?.open ?? 0) > 0 },
+        { n: o.payouts?.queued ?? 0, l: "queued payouts", alert: (o.payouts?.queued ?? 0) > 0 },
+        { n: o.payouts?.submitted ?? 0, l: "submitted payouts", alert: (o.payouts?.submitted ?? 0) > 0 },
+      ];
+      $("#stats").innerHTML = cells
+        .map((s) => `<div class="stat${s.alert ? " alert" : ""}"><div class="n">${s.n}</div><div class="l">${s.l}</div></div>`)
+        .join("");
+    }
+
+    async function refreshOverview() {
+      const r = await api("/v1/admin/overview");
+      if (r.ok) renderOverview(r.body);
+    }
+
+    // ---- campaigns ----
+    async function loadCampaigns() {
+      const q = campState.status ? `?status=${campState.status}` : "";
+      const r = await api(`/v1/admin/campaigns${q}`);
+      const body = $("#camp-body");
+      if (!r.ok) return void (body.innerHTML = emptyRow(6, "failed to load"));
+      const rows = r.body.campaigns || [];
+      if (!rows.length) return void (body.innerHTML = emptyRow(6, "no campaigns"));
+      body.innerHTML = rows
+        .map((c) => {
+          const acts = [];
+          if (c.status === "active") acts.push(btn(`pauseCampaign('${c.id}')`, "pause"));
+          if (c.status === "paused") acts.push(btn(`resumeCampaign('${c.id}')`, "resume"));
+          if (c.status !== "cancelled") acts.push(btn(`cancelCampaign('${c.id}')`, "cancel", "danger"));
+          const serving = c.serving ? ' <span class="serving">●</span>' : "";
+          return `<tr>
+            <td class="mono wrap-text"><a class="board-link" href="${esc(c.url)}" target="_blank" rel="noopener noreferrer nofollow">${esc(c.message)}</a><br><code class="mono muted">${esc(c.id)}</code></td>
+            <td class="mono">${esc(c.label || "—")}<br><span class="muted">${short(c.advertiser)}</span></td>
+            <td class="mono">${fmt(c.bid_per_block_micro)}</td>
+            <td class="mono">${fmt(c.remainingMicro)}</td>
+            <td><span class="st st-${c.status}">${c.status}${serving}</span></td>
+            <td><div class="actions">${acts.join("")}</div></td>
+          </tr>`;
+        })
+        .join("");
+    }
+
+    async function pauseCampaign(id) {
+      const r = await api(`/v1/campaigns/${id}/pause`, { method: "POST" });
+      after(r, "campaign paused");
+    }
+    async function resumeCampaign(id) {
+      const r = await api(`/v1/campaigns/${id}/resume`, { method: "POST" });
+      after(r, "campaign resumed");
+    }
+    async function cancelCampaign(id) {
+      if (!confirm("Cancel this campaign? This is terminal — it leaves the board for good.")) return;
+      const refundTo = prompt("Refund wallet for any unspent budget (leave blank if none / 0x advertiser already set):", "") || undefined;
+      const r = await api(`/v1/campaigns/${id}/cancel`, {
+        method: "POST",
+        body: JSON.stringify(refundTo ? { refundTo } : {}),
+      });
+      after(r, "campaign cancelled");
+    }
+    window.pauseCampaign = pauseCampaign;
+    window.resumeCampaign = resumeCampaign;
+    window.cancelCampaign = cancelCampaign;
+
+    // ---- reports ----
+    async function loadReports() {
+      const q = repState.status ? `?status=${repState.status}` : "";
+      const r = await api(`/v1/admin/reports${q}`);
+      const body = $("#rep-body");
+      if (!r.ok) return void (body.innerHTML = emptyRow(5, "failed to load"));
+      const rows = r.body.reports || [];
+      if (!rows.length) return void (body.innerHTML = emptyRow(5, "queue is clear"));
+      body.innerHTML = rows
+        .map((rep) => {
+          const acts =
+            rep.status === "open"
+              ? `<div class="actions">${btn(`resolveReport('${rep.id}','actioned')`, "action")}${btn(
+                  `resolveReport('${rep.id}','dismissed')`,
+                  "dismiss",
+                )}</div>`
+              : `<span class="muted">${esc(rep.resolution || "—")}</span>`;
+          return `<tr>
+            <td><span class="st st-${rep.status === "open" ? "open" : rep.status}">${esc(rep.reason)}</span></td>
+            <td class="wrap-text">${esc(rep.details)}</td>
+            <td class="mono">${rep.campaign_id ? esc(rep.campaign_id) : "—"}</td>
+            <td><span class="st st-${rep.status}">${rep.status}</span></td>
+            <td>${acts}</td>
+          </tr>`;
+        })
+        .join("");
+    }
+
+    async function resolveReport(id, status) {
+      let resolution;
+      if (status === "actioned") {
+        resolution = prompt("Note (what was done — e.g. paused campaign cmp_…):", "content restricted") || "";
+        toast("Tip: also pause/cancel the campaign from the campaigns table.", "ok");
+      } else {
+        resolution = prompt("Dismissal note (optional):", "") || "";
+      }
+      const r = await api(`/v1/admin/reports/${id}/resolve`, {
+        method: "POST",
+        body: JSON.stringify({ status, resolution }),
+      });
+      if (r.ok) {
+        toast(`report ${status}`);
+        await Promise.all([loadReports(), refreshOverview()]);
+      } else apiErr(r);
+    }
+    window.resolveReport = resolveReport;
+
+    // ---- payouts ----
+    async function loadPayouts() {
+      const q = payState.status ? `?status=${payState.status}` : "";
+      const r = await api(`/v1/admin/payouts${q}`);
+      const body = $("#pay-body");
+      if (!r.ok) return void (body.innerHTML = emptyRow(6, "failed to load"));
+      const rows = r.body.payouts || [];
+      if (!rows.length) return void (body.innerHTML = emptyRow(6, "no payouts"));
+      body.innerHTML = rows
+        .map((p) => {
+          const acts = [];
+          if (p.status === "queued" || p.status === "submitted") acts.push(btn(`retryPayout('${p.id}')`, "retry"));
+          if (p.status === "queued" || p.status === "submitted") acts.push(btn(`failPayout('${p.id}')`, "fail", "danger"));
+          const tx = p.tx ? `<br><span class="muted mono">${short(p.tx)}</span>` : "";
+          return `<tr>
+            <td class="mono">${esc(p.id)}</td>
+            <td>${esc(p.kind)}</td>
+            <td class="mono">${short(p.wallet)}</td>
+            <td class="mono">${fmt(p.amount_micro)}</td>
+            <td><span class="st st-${p.status}">${p.status}</span>${tx}</td>
+            <td><div class="actions">${acts.join("")}</div></td>
+          </tr>`;
+        })
+        .join("");
+    }
+
+    async function retryPayout(id) {
+      const r = await api(`/v1/admin/payouts/${id}/retry`, { method: "POST" });
+      if (r.ok) {
+        toast(`retry → ${r.body.result?.status ?? "done"}`);
+        await Promise.all([loadPayouts(), refreshOverview()]);
+      } else apiErr(r);
+    }
+    async function failPayout(id) {
+      if (!confirm("Mark this payout failed and return the debit to its source?")) return;
+      let r = await api(`/v1/admin/payouts/${id}/fail`, { method: "POST" });
+      if (r.status === 409 && confirm(`${r.body.error}\n\nForce-fail anyway?`)) {
+        r = await api(`/v1/admin/payouts/${id}/fail?force=1`, { method: "POST" });
+      }
+      if (r.ok) {
+        toast("payout failed & refunded");
+        await Promise.all([loadPayouts(), refreshOverview()]);
+      } else apiErr(r);
+    }
+    window.retryPayout = retryPayout;
+    window.failPayout = failPayout;
+
+    // ---- helpers ----
+    function btn(onclick, label, kind = "ghost") {
+      return `<button class="${kind === "danger" ? "ghost" : "ghost"}" style="${
+        kind === "danger" ? "color:#ff9b9b;border-color:#5a2a2a" : ""
+      }" onclick="${onclick}">${label}</button>`;
+    }
+    function emptyRow(cols, text) {
+      return `<tr class="empty-row"><td colspan="${cols}">${esc(text)}</td></tr>`;
+    }
+    function apiErr(r) {
+      const msg = typeof r.body?.error === "string" ? r.body.error : `request failed (${r.status})`;
+      toast(msg, "err");
+    }
+    async function after(r, okMsg) {
+      if (r.ok) {
+        toast(okMsg);
+        await Promise.all([loadCampaigns(), refreshOverview()]);
+      } else apiErr(r);
+    }
+
+    // ---- wiring ----
+    $("#token-go").addEventListener("click", () => unlock($("#token-input").value.trim()));
+    $("#token-input").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") unlock($("#token-input").value.trim());
+    });
+    $("#refresh").addEventListener("click", () =>
+      Promise.all([refreshOverview(), loadCampaigns(), loadReports(), loadPayouts()]),
+    );
+    $("#lock").addEventListener("click", () => {
+      sessionStorage.removeItem(TOKEN_KEY);
+      token = "";
+      showGate();
+    });
+    function wireTabs(rowSel, state, loader) {
+      document.querySelectorAll(`${rowSel} button`).forEach((b) => {
+        b.addEventListener("click", () => {
+          document.querySelectorAll(`${rowSel} button`).forEach((x) => x.setAttribute("aria-pressed", "false"));
+          b.setAttribute("aria-pressed", "true");
+          state.status = b.dataset.status;
+          loader();
+        });
+      });
+    }
+    wireTabs("#camp-tabs", campState, loadCampaigns);
+    wireTabs("#rep-tabs", repState, loadReports);
+    wireTabs("#pay-tabs", payState, loadPayouts);
+
+    // boot: try the stored token, else gate.
+    if (token) unlock(token);
+    else showGate();
+  </script>
+</body>
+</html>

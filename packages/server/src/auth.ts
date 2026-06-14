@@ -1,8 +1,7 @@
-import type Database from "better-sqlite3";
 import { createHash, randomBytes } from "node:crypto";
 import { nanoid } from "nanoid";
 import { getAddress, recoverMessageAddress, type Hex } from "viem";
-import type { Advertiser, Session } from "./db.js";
+import type { Advertiser, Db, Session } from "./db.js";
 
 function sha256Hex(s: string): string {
   return createHash("sha256").update(s, "utf8").digest("hex");
@@ -34,7 +33,7 @@ export class AdvertiserAuth {
   private pending = new Map<string, Challenge>();
 
   constructor(
-    private db: Database.Database,
+    private db: Db,
     private chainId: number,
   ) {}
 
@@ -114,73 +113,72 @@ export class AdvertiserAuth {
 
   // ---- sessions ----
 
-  createSession(wallet: string): { token: string; expiresAt: number } {
+  async createSession(wallet: string): Promise<{ token: string; expiresAt: number }> {
     const token = `cvs_${nanoid(32)}`;
     const now = Date.now();
     const expiresAt = now + SESSION_TTL_MS;
-    this.db
-      .prepare(
-        `INSERT INTO sessions (token_hash, wallet, created_at, expires_at) VALUES (?, ?, ?, ?)`,
-      )
-      .run(sha256Hex(token), wallet, now, expiresAt);
+    await this.db.run(
+      `INSERT INTO sessions (token_hash, wallet, created_at, expires_at) VALUES ($1, $2, $3, $4)`,
+      [sha256Hex(token), wallet, now, expiresAt],
+    );
     // Opportunistic cleanup so dead sessions don't pile up forever.
-    this.db.prepare(`DELETE FROM sessions WHERE expires_at < ?`).run(now);
+    await this.db.run(`DELETE FROM sessions WHERE expires_at < $1`, [now]);
     return { token, expiresAt };
   }
 
   /** The wallet a session token belongs to, or undefined when absent/expired. */
-  sessionWallet(token: string | undefined): string | undefined {
+  async sessionWallet(token: string | undefined): Promise<string | undefined> {
     if (!token) return undefined;
-    const row = this.db
-      .prepare(`SELECT * FROM sessions WHERE token_hash = ?`)
-      .get(sha256Hex(token)) as Session | undefined;
+    const row = await this.db.get<Session>(`SELECT * FROM sessions WHERE token_hash = $1`, [
+      sha256Hex(token),
+    ]);
     if (!row) return undefined;
     if (row.expires_at < Date.now()) {
-      this.db.prepare(`DELETE FROM sessions WHERE token_hash = ?`).run(row.token_hash);
+      await this.db.run(`DELETE FROM sessions WHERE token_hash = $1`, [row.token_hash]);
       return undefined;
     }
     return row.wallet;
   }
 
-  deleteSession(token: string): void {
-    this.db.prepare(`DELETE FROM sessions WHERE token_hash = ?`).run(sha256Hex(token));
+  async deleteSession(token: string): Promise<void> {
+    await this.db.run(`DELETE FROM sessions WHERE token_hash = $1`, [sha256Hex(token)]);
   }
 
   // ---- advertiser accounts ----
 
   /** Fetch-or-create the account row for a signed-in wallet. */
-  ensureAdvertiser(wallet: string): Advertiser {
-    this.db
-      .prepare(
-        `INSERT INTO advertisers (wallet, label, created_at, settings_at)
-         VALUES (?, NULL, ?, NULL)
-         ON CONFLICT(wallet) DO NOTHING`,
-      )
-      .run(wallet, Date.now());
-    return this.getAdvertiser(wallet)!;
+  async ensureAdvertiser(wallet: string): Promise<Advertiser> {
+    await this.db.run(
+      `INSERT INTO advertisers (wallet, label, created_at, settings_at)
+       VALUES ($1, NULL, $2, NULL)
+       ON CONFLICT(wallet) DO NOTHING`,
+      [wallet, Date.now()],
+    );
+    return (await this.getAdvertiser(wallet))!;
   }
 
-  getAdvertiser(wallet: string): Advertiser | undefined {
-    return this.db.prepare(`SELECT * FROM advertisers WHERE wallet = ?`).get(wallet) as
-      | Advertiser
-      | undefined;
+  async getAdvertiser(wallet: string): Promise<Advertiser | undefined> {
+    return this.db.get<Advertiser>(`SELECT * FROM advertisers WHERE wallet = $1`, [wallet]);
   }
 
   /** Record that `wallet` accepted Terms `version` (by signing the SIWE message
    *  that referenced it). Always advances to the latest accepted version. */
-  recordTermsAcceptance(wallet: string, version: string): Advertiser {
-    this.ensureAdvertiser(wallet);
-    this.db
-      .prepare(`UPDATE advertisers SET terms_version = ?, terms_accepted_at = ? WHERE wallet = ?`)
-      .run(version, Date.now(), wallet);
-    return this.getAdvertiser(wallet)!;
+  async recordTermsAcceptance(wallet: string, version: string): Promise<Advertiser> {
+    await this.ensureAdvertiser(wallet);
+    await this.db.run(
+      `UPDATE advertisers SET terms_version = $1, terms_accepted_at = $2 WHERE wallet = $3`,
+      [version, Date.now(), wallet],
+    );
+    return (await this.getAdvertiser(wallet))!;
   }
 
-  saveSettings(wallet: string, label: string): Advertiser {
-    this.ensureAdvertiser(wallet);
-    this.db
-      .prepare(`UPDATE advertisers SET label = ?, settings_at = ? WHERE wallet = ?`)
-      .run(label, Date.now(), wallet);
-    return this.getAdvertiser(wallet)!;
+  async saveSettings(wallet: string, label: string): Promise<Advertiser> {
+    await this.ensureAdvertiser(wallet);
+    await this.db.run(`UPDATE advertisers SET label = $1, settings_at = $2 WHERE wallet = $3`, [
+      label,
+      Date.now(),
+      wallet,
+    ]);
+    return (await this.getAdvertiser(wallet))!;
   }
 }

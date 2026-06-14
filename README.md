@@ -34,7 +34,7 @@ All money is integer **micro-USD** internally (1e6 = $1), which is exactly USDC'
 
 | Package | What it is |
 |---|---|
-| `@codevertise/server` | The marketplace: Express API, SQLite ledger, block auction, x402 paywall |
+| `@codevertise/server` | The marketplace: Express API, PostgreSQL ledger (pg), block auction, x402 paywall, operator console |
 | `@codevertise/sdk` | Publisher SDK: fetch the winning ad, view-threshold impressions, clicks, earnings, payout |
 | `@codevertise/agent-bidder` | Example autonomous advertiser: reads the board, outbids, pays the 402 |
 | `@codevertise/cli-demo` | Example publisher: a spinner whose status line is Codevertise inventory |
@@ -95,12 +95,20 @@ POST /v1/events                        {token, type: impression|click} — serve
 GET  /v1/publishers/:wallet            earnings ledger + payout history
 POST /v1/publishers/:wallet/payouts    request USDC payout (≥ $10)
 
-# with ADMIN_TOKEN set (Bearer or X-Admin-Token):
+# with ADMIN_TOKEN set (Bearer or X-Admin-Token) — or use the /admin.html console:
+GET  /v1/admin/overview                operator dashboard counts (campaigns/reports/payouts)
+GET  /v1/admin/campaigns?status=       every campaign incl. wallets + status (moderation view)
 GET  /v1/admin/payouts?status=         operator payout queue
 POST /v1/admin/payouts/:id/retry       re-send a queued payout / reconcile a submitted one
 POST /v1/admin/payouts/:id/fail        give up + refund (refuses if a tx is in flight)
+GET  /v1/admin/reports?status=         content-report (DSA notice-and-action) queue
+POST /v1/admin/reports/:id/resolve     {status: actioned|dismissed, resolution?}
 POST /v1/campaigns/:id/pause           moderation kill switch for any campaign
 ```
+
+A no-build operator console lives at **`/admin.html`**: paste the `ADMIN_TOKEN`
+to unlock a dashboard over the endpoints above — campaign moderation (pause/
+resume/cancel), the content-report queue, and payout retry/fail.
 
 Campaign management is credentialed by the **manage key** returned once at creation — there is no
 account system to attack, and wallets are never a lookup key (an on-chain payer can't be linked to
@@ -147,13 +155,15 @@ npm test        # 58 vitest cases: auction economics, serve-token anti-fraud,
   per-surface pacing, click-through ratio cap (`CLICK_RATIO`), https-only creatives, billable
   tokens only for valid EVM payout wallets, `TRUST_PROXY` off by default.
 - **Ops**: `GET /healthz`, graceful SIGTERM drain, JSON logs for money movements and 4xx/5xx,
-  `npm run backup` (online SQLite backup — cron it off-host; the DB is the ledger), `Dockerfile`
-  (volume-mount `DB_PATH`), CI in `.github/workflows/ci.yml`.
+  PostgreSQL ledger via `DATABASE_URL` (back it up with `pg_dump`/managed snapshots — the DB
+  is the ledger), `Dockerfile`, CI in `.github/workflows/ci.yml`. With `DATABASE_URL` unset the
+  server runs on an ephemeral in-process `pg-mem` instance (tests / zero-config dev only).
 
 ## Honest limitations
 
-- Single process, single SQLite file: rate limits and pacing are in-memory, so run ONE instance
-  (scale the serve path with a cache in front, not replicas). Fine well past MVP traffic.
+- Single process: the ledger is in PostgreSQL, but rate limits, pacing, and serve-rotation
+  weights are in-memory, so run ONE instance (scale the serve path with a cache in front, not
+  replicas). Fine well past MVP traffic.
 - Click-fraud control is a ratio cap, not attestation — a patient publisher can still extract the
   capped ratio. Real click verification (landing-page beacon) is future work.
 - Pseudonymous publishers are unlimited: a botnet across many IPs and wallets can still farm

@@ -1,6 +1,8 @@
 export interface Config {
   port: number;
-  dbPath: string;
+  /** PostgreSQL connection string (the primary datastore). When unset, the app
+   *  falls back to an in-process pg-mem instance for tests / zero-config dev. */
+  databaseUrl?: string;
   /** "mock" runs the marketplace without a chain; "x402" enforces real USDC payments. */
   paymentsMode: "mock" | "x402";
   /** CAIP-2 network for x402 payments. Base Sepolia by default. */
@@ -97,7 +99,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   return {
     port: Number(env.PORT ?? 4021),
-    dbPath: env.DB_PATH ?? "codevertise.db",
+    databaseUrl: env.DATABASE_URL,
     paymentsMode: mode,
     network: env.X402_NETWORK ?? "eip155:84532",
     publicUrl: (env.PUBLIC_URL ?? "https://codevertise.dev").replace(/\/+$/, ""),

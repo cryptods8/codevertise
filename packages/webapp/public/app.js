@@ -383,16 +383,45 @@ async function loadInfo() {
 
 // ---- auction board ----
 
+// The campaign's message links out to its landing page — the same URL an agent
+// surface sends a click to. Only http(s) destinations are turned into anchors;
+// anything else renders as plain text so a malformed/hostile scheme can't slip
+// a javascript: link onto the public board.
+function campaignLink(b) {
+  const msg = esc(b.message);
+  let safe = false;
+  try {
+    const u = new URL(b.url);
+    safe = u.protocol === "https:" || u.protocol === "http:";
+  } catch {
+    safe = false;
+  }
+  if (!safe) return msg;
+  return `<a class="board-link" href="${esc(b.url)}" target="_blank" rel="noopener noreferrer nofollow">${msg}</a>`;
+}
+
+// A subtle bar showing how much of a campaign's budget has been spent. It reads
+// as a faint fill under the remaining figure — present, not loud.
+function budgetBar(b) {
+  const budget = b.budgetMicro ?? 0;
+  const spent = b.spentMicro ?? 0;
+  const pct = budget > 0 ? Math.max(0, Math.min(100, (spent / budget) * 100)) : 0;
+  const label = `${fmt(spent)} of ${fmt(budget)} spent`;
+  return `<div class="budget-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(
+    pct,
+  )}" aria-label="${esc(label)}" title="${esc(label)}"><span style="width:${pct.toFixed(1)}%"></span></div>`;
+}
+
 function boardRowsHtml() {
   return board
     .map((b) => {
       const isMine = mineIds.has(b.campaignId);
       return `<tr class="${isMine ? "row-mine" : ""}">
         <td data-l="#">${b.rank}</td>
-        <td data-l="campaign" class="mono cell-msg" title="${esc(b.campaignId)}">${esc(b.message)}</td>
+        <td data-l="campaign" class="mono cell-msg" title="${esc(b.campaignId)}">${campaignLink(b)}</td>
         <td data-l="advertiser" class="mono">${esc(b.advertiser)}${isMine ? " (you)" : ""}</td>
         <td data-l="bid / block" class="mono">${fmt(b.bidPerBlockMicro)}</td>
-        <td data-l="remaining" class="mono">${fmt(b.remainingMicro)}</td>
+        <td data-l="remaining" class="mono cell-remaining">${fmt(b.remainingMicro)}${budgetBar(b)}</td>
         <td data-l="" class="cell-serving">${b.serving ? '<span class="serving">● SERVING</span>' : ""}</td>
       </tr>`;
     })

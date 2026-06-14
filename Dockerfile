@@ -1,12 +1,13 @@
 # Codevertise marketplace server.
 #
 #   docker build -t codevertise .
-#   docker run -p 4021:4021 -v codevertise-data:/data \
-#     -e DB_PATH=/data/codevertise.db \
+#   docker run -p 4021:4021 \
+#     -e DATABASE_URL=postgres://user:pass@db:5432/codevertise \
 #     -e PAYMENTS_MODE=x402 -e PAY_TO_ADDRESS=0xYourTreasury \
 #     codevertise
 #
-# node:22-slim (not alpine): better-sqlite3 ships glibc prebuilds.
+# The ledger lives in PostgreSQL (point DATABASE_URL at a managed instance or a
+# sidecar postgres). node:22-slim (not alpine) for glibc-based native prebuilds.
 FROM node:22-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./

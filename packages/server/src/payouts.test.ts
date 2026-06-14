@@ -14,20 +14,20 @@ import { executePayout, retryPayout, type PayoutSender } from "./payouts.js";
 const cfg: Config = loadConfig({ PUBLISHER_SHARE: "0.5" } as NodeJS.ProcessEnv);
 const WALLET = `0x${"d4".repeat(20)}`;
 
-function makeMarket() {
-  return new Marketplace(openDb(":memory:"), cfg);
+async function makeMarket() {
+  return new Marketplace(await openDb(), cfg);
 }
 
-function earn(m: Marketplace, usd: number) {
-  const c = m.createCampaign({
+async function earn(m: Marketplace, usd: number) {
+  const c = await m.createCampaign({
     advertiser: "adv",
     message: "ad",
     url: "https://example.com",
     bidPerBlockMicro: 1000 * USD, // $1/impression
   });
-  m.fundCampaign({ campaignId: c.id, payer: "adv", amountMicro: usd * 2 * USD, rail: "mock" });
+  await m.fundCampaign({ campaignId: c.id, payer: "adv", amountMicro: usd * 2 * USD, rail: "mock" });
   for (let i = 0; i < usd * 2; i++) {
-    m.recordEvent({ key: `e${i}`, type: "impression", campaignId: c.id, publisher: WALLET, surface: "s" });
+    await m.recordEvent({ key: `e${i}`, type: "impression", campaignId: c.id, publisher: WALLET, surface: "s" });
   }
 }
 
@@ -38,31 +38,31 @@ const okSender = (): PayoutSender => ({
 
 describe("payout state machine", () => {
   let m: Marketplace;
-  beforeEach(() => {
-    m = makeMarket();
-    earn(m, 12);
+  beforeEach(async () => {
+    m = await makeMarket();
+    await earn(m, 12);
   });
 
   it("happy path: queued → submitted → sent, balance stays debited", async () => {
-    const p = m.requestPayout(WALLET);
+    const p = await m.requestPayout(WALLET);
     const result = await executePayout(cfg, m, p.id, WALLET, p.amount_micro, okSender());
     expect(result).toMatchObject({ status: "sent", tx: "0xtx_ok" });
-    expect(m.getPayout(p.id)!.status).toBe("sent");
-    expect(m.balanceMicro(WALLET)).toBe(0);
+    expect((await m.getPayout(p.id))!.status).toBe("sent");
+    expect(await m.balanceMicro(WALLET)).toBe(0);
   });
 
   it("reverted receipt: payout fails and the balance is refunded once", async () => {
-    const p = m.requestPayout(WALLET);
+    const p = await m.requestPayout(WALLET);
     const sender: PayoutSender = { send: async () => "0xtx_rev", wait: async () => "reverted" };
     const result = await executePayout(cfg, m, p.id, WALLET, p.amount_micro, sender);
     expect(result.status).toBe("failed");
-    expect(m.balanceMicro(WALLET)).toBe(12 * USD);
+    expect(await m.balanceMicro(WALLET)).toBe(12 * USD);
     // A second resolution attempt must not refund again.
-    expect(() => m.resolvePayout(p.id, "failed")).toThrow(/already resolved/);
+    await expect(m.resolvePayout(p.id, "failed")).rejects.toThrow(/already resolved/);
   });
 
   it("send threw before broadcast: payout stays queued, NO refund, retry succeeds", async () => {
-    const p = m.requestPayout(WALLET);
+    const p = await m.requestPayout(WALLET);
     const sender: PayoutSender = {
       send: async () => {
         throw new Error("rpc unreachable");
@@ -71,15 +71,15 @@ describe("payout state machine", () => {
     };
     const result = await executePayout(cfg, m, p.id, WALLET, p.amount_micro, sender);
     expect(result.status).toBe("queued");
-    expect(m.getPayout(p.id)!.status).toBe("queued");
-    expect(m.balanceMicro(WALLET)).toBe(0); // debit stands
+    expect((await m.getPayout(p.id))!.status).toBe("queued");
+    expect(await m.balanceMicro(WALLET)).toBe(0); // debit stands
 
     const retried = await retryPayout(cfg, m, p.id, okSender());
     expect(retried.status).toBe("sent");
   });
 
   it("receipt timeout after broadcast: stays submitted with its tx, retry reconciles without re-sending", async () => {
-    const p = m.requestPayout(WALLET);
+    const p = await m.requestPayout(WALLET);
     let sends = 0;
     const flaky: PayoutSender = {
       send: async () => {
@@ -92,7 +92,7 @@ describe("payout state machine", () => {
     };
     const result = await executePayout(cfg, m, p.id, WALLET, p.amount_micro, flaky);
     expect(result).toMatchObject({ status: "submitted", tx: "0xtx_pending" });
-    expect(m.balanceMicro(WALLET)).toBe(0); // ambiguous → debit stands
+    expect(await m.balanceMicro(WALLET)).toBe(0); // ambiguous → debit stands
 
     const reconciler: PayoutSender = { send: async () => "0xNEVER", wait: async () => "success" };
     const retried = await retryPayout(cfg, m, p.id, reconciler);
@@ -101,7 +101,7 @@ describe("payout state machine", () => {
   });
 
   it("without a treasury key the payout queues for manual settlement", async () => {
-    const p = m.requestPayout(WALLET);
+    const p = await m.requestPayout(WALLET);
     const result = await executePayout(cfg, m, p.id, WALLET, p.amount_micro);
     expect(result.status).toBe("queued");
   });

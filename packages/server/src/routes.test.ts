@@ -36,14 +36,14 @@ async function start(overrides: Partial<Config> = {}): Promise<Harness> {
     tokenTtlSeconds: 5,
     ...overrides,
   };
-  const market = new Marketplace(openDb(":memory:"), cfg);
-  const c = market.createCampaign({
+  const market = new Marketplace(await openDb(), cfg);
+  const c = await market.createCampaign({
     advertiser: "adv",
     message: "ad",
     url: "https://example.com",
     bidPerBlockMicro: 2 * USD, // $0.002/impression at 1000 impressions/block
   });
-  market.fundCampaign({ campaignId: c.id, payer: "adv", amountMicro: 100 * USD, rail: "mock" });
+  await market.fundCampaign({ campaignId: c.id, payer: "adv", amountMicro: 100 * USD, rail: "mock" });
 
   const app = await buildApp(cfg, market);
   const server = await new Promise<import("node:http").Server>((resolve) => {
@@ -93,11 +93,11 @@ describe("serve → event redemption", () => {
     const first = await postEvent(h, { token: ad.token, type: "impression" });
     expect(first.status).toBe(201);
     expect(first.body.recorded).toBe(true);
-    expect(h.market.balanceMicro(PUB)).toBe(1000); // 50% of $0.002
+    expect(await h.market.balanceMicro(PUB)).toBe(1000); // 50% of $0.002
 
     const replay = await postEvent(h, { token: ad.token, type: "impression" });
     expect(replay.body.recorded).toBe(false);
-    expect(h.market.balanceMicro(PUB)).toBe(1000); // unchanged
+    expect(await h.market.balanceMicro(PUB)).toBe(1000); // unchanged
   });
 
   it("credits the token's publisher — a body field can't redirect earnings", async () => {
@@ -106,8 +106,8 @@ describe("serve → event redemption", () => {
     await sleep(150);
     // Attacker tries to bolt a different wallet onto the request body.
     await postEvent(h, { token: ad.token, type: "impression", publisher: ATTACKER });
-    expect(h.market.balanceMicro(HONEST)).toBe(1000);
-    expect(h.market.balanceMicro(ATTACKER)).toBe(0);
+    expect(await h.market.balanceMicro(HONEST)).toBe(1000);
+    expect(await h.market.balanceMicro(ATTACKER)).toBe(0);
   });
 
   it("rejects a forged token", async () => {
@@ -123,7 +123,7 @@ describe("serve → event redemption", () => {
     } satisfies ServeToken);
     const res = await postEvent(h, { token: forged, type: "impression" });
     expect(res.status).toBe(403);
-    expect(h.market.balanceMicro(ATTACKER)).toBe(0);
+    expect(await h.market.balanceMicro(ATTACKER)).toBe(0);
   });
 
   it("rejects redemption before the view threshold", async () => {
@@ -131,12 +131,12 @@ describe("serve → event redemption", () => {
     const { body: ad } = await serve(h);
     const res = await postEvent(h, { token: ad.token, type: "impression" }); // no wait
     expect(res.status).toBe(425);
-    expect(h.market.balanceMicro(PUB)).toBe(0);
+    expect(await h.market.balanceMicro(PUB)).toBe(0);
   });
 
   it("rejects an expired token", async () => {
     const h = await start({ tokenTtlSeconds: 1 });
-    const stale = signToken(h.market.signingSecret(), {
+    const stale = signToken(await h.market.signingSecret(), {
       jti: "evt_old",
       campaignId: h.campaignId,
       publisher: PUB,
@@ -258,11 +258,11 @@ describe("advertiser auth (manage keys)", () => {
       "x-manage-key": h.manageKey,
     });
     expect(paused.status).toBe(200);
-    expect(h.market.winner()).toBeUndefined();
+    expect(await h.market.winner()).toBeUndefined();
     expect((await serve(h)).status).toBe(204);
 
     await post(h, `/v1/campaigns/${h.campaignId}/resume`, undefined, { "x-manage-key": h.manageKey });
-    expect(h.market.winner()?.id).toBe(h.campaignId);
+    expect((await h.market.winner())?.id).toBe(h.campaignId);
   });
 
   it("stats require the manage key; the public view hides the wallet", async () => {
@@ -289,7 +289,7 @@ describe("advertiser auth (manage keys)", () => {
       "x-admin-token": "secret-admin",
     });
     expect(ok.status).toBe(200);
-    expect(h.market.winner()).toBeUndefined();
+    expect(await h.market.winner()).toBeUndefined();
   });
 });
 
@@ -377,7 +377,7 @@ describe("campaign cancel & withdraw over HTTP", () => {
     const h = await start();
     expect((await cancel(h)).status).toBe(403);
     expect((await cancel(h, {}, "cvk_wrong")).status).toBe(403);
-    expect(h.market.getCampaign(h.campaignId)!.status).toBe("active");
+    expect((await h.market.getCampaign(h.campaignId))!.status).toBe("active");
   });
 
   it("refuses to cancel when the unspent budget has nowhere to go", async () => {
@@ -385,7 +385,7 @@ describe("campaign cancel & withdraw over HTTP", () => {
     const res = await cancel(h, {}, h.manageKey);
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/refundTo/);
-    expect(h.market.getCampaign(h.campaignId)!.status).toBe("active");
+    expect((await h.market.getCampaign(h.campaignId))!.status).toBe("active");
   });
 
   it("cancels, queues the refund, and removes the campaign from every public surface", async () => {
@@ -425,7 +425,7 @@ describe("campaign cancel & withdraw over HTTP", () => {
   it("withdraw re-runs a refund that failed terminally", async () => {
     const h = await start();
     const first = await cancel(h, { refundTo: REFUND }, h.manageKey);
-    h.market.resolvePayout(first.body.refund.id, "failed");
+    await h.market.resolvePayout(first.body.refund.id, "failed");
 
     const res = await fetch(`${h.base}/v1/campaigns/${h.campaignId}/withdraw`, {
       method: "POST",
@@ -435,7 +435,7 @@ describe("campaign cancel & withdraw over HTTP", () => {
     expect(res.status).toBe(201);
     const body = await res.json();
     expect(body.payout.amount_micro).toBe(100 * USD);
-    expect(h.market.remainingMicro(h.market.getCampaign(h.campaignId)!)).toBe(0);
+    expect(h.market.remainingMicro((await h.market.getCampaign(h.campaignId))!)).toBe(0);
 
     // Nothing left: a second withdraw is refused.
     const empty = await fetch(`${h.base}/v1/campaigns/${h.campaignId}/withdraw`, {
@@ -542,7 +542,7 @@ describe("content reports (DSA notice-and-action)", () => {
     });
     expect(resolved.status).toBe(200);
     expect((await resolved.json()).report.status).toBe("actioned");
-    expect(h.market.openReportCount()).toBe(0);
+    expect(await h.market.openReportCount()).toBe(0);
   });
 
   it("rejects an invalid reason and hides the admin queue without a token", async () => {
